@@ -2,12 +2,12 @@ import streamlit as st
 import pandas as pd
 import pdfplumber
 import re
-from wellbore_tortuosity.io.loaders import SurveyDataLoader
-from wellbore_tortuosity.io.preprocess import SurveyPreprocessor
-from wellbore_tortuosity.analysis.sections import WellSectionClassifier
-from wellbore_tortuosity.analysis.survey_quality import SurveyQualityAnalyzer
-from wellbore_tortuosity.analysis.tortuosity import TortuosityAnalyzer
-from wellbore_tortuosity.visualization.plots import WellPlots
+from loaders import SurveyDataLoader
+from preprocess import SurveyPreprocessor
+from sections import WellSectionClassifier
+from survey_quality import SurveyQualityAnalyzer
+from tortuosity import TortuosityAnalyzer
+from plots import WellPlots
 
 st.set_page_config(page_title="Wellbore Tortuosity Platform", layout="wide")
 st.title("Wellbore Tortuosity Analytics Platform")
