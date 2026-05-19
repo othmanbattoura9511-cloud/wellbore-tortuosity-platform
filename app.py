@@ -5,6 +5,12 @@ from pathlib import Path
 import pandas as pd
 import pdfplumber
 import streamlit as st
+from column_mapping import (
+    apply_manual_column_map,
+    missing_columns_message,
+    standardize_survey_columns,
+    suggest_column_index,
+)
 from loaders import SurveyDataLoader
 from preprocess import SurveyPreprocessor
 from sections import WellSectionClassifier
@@ -19,6 +25,60 @@ def save_uploaded_file(uploaded_file):
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(uploaded_file.getbuffer())
         return tmp.name
+
+
+def resolve_survey_columns(df: pd.DataFrame, file_key: str) -> pd.DataFrame | None:
+    """Auto-map columns or show manual mapping UI. Returns None to stop the app run."""
+    mapped_key = f"survey_mapped_{file_key}"
+    if mapped_key in st.session_state:
+        return st.session_state[mapped_key]
+
+    df_mapped, missing = standardize_survey_columns(df)
+    if not missing:
+        st.session_state[mapped_key] = df_mapped
+        return df_mapped
+
+    st.error("Could not automatically identify all required survey columns.")
+    st.markdown(missing_columns_message(missing, df.columns))
+    st.caption(
+        "Expected names include MD / Measured Depth / Depth, "
+        "Inclination / INC / Angle, and Azimuth / AZI / Bearing."
+    )
+    st.dataframe(df.head(10), use_container_width=True)
+
+    col_options = list(df.columns)
+    st.subheader("Manual column mapping")
+    c1, c2, c3 = st.columns(3)
+    md_pick = c1.selectbox(
+        "MD column",
+        col_options,
+        index=suggest_column_index(col_options, "MD"),
+        key=f"map_md_{file_key}",
+    )
+    inc_pick = c2.selectbox(
+        "Inclination column",
+        col_options,
+        index=suggest_column_index(col_options, "Inclination"),
+        key=f"map_inc_{file_key}",
+    )
+    azi_pick = c3.selectbox(
+        "Azimuth column",
+        col_options,
+        index=suggest_column_index(col_options, "Azimuth"),
+        key=f"map_azi_{file_key}",
+    )
+
+    if st.button("Apply column mapping", type="primary", key=f"apply_map_{file_key}"):
+        df_manual = apply_manual_column_map(df, md_pick, inc_pick, azi_pick)
+        _, still_missing = standardize_survey_columns(df_manual)
+        if still_missing:
+            st.error(missing_columns_message(still_missing, df_manual.columns))
+        else:
+            st.session_state[mapped_key] = df_manual
+            st.success("Column mapping applied. Reloading analysis…")
+            st.rerun()
+
+    return None
 
 
 st.set_page_config(page_title="Wellbore Tortuosity Platform", layout="wide")
@@ -170,11 +230,22 @@ if bha_pdf_rows:
     st.dataframe(pd.DataFrame(bha_pdf_rows), use_container_width=True)
 if uploaded is not None:
     st.session_state["uploaded_file"] = uploaded
+    file_key = f"{uploaded.name}:{getattr(uploaded, 'size', 0)}"
+    if st.session_state.get("survey_file_key") != file_key:
+        for key in list(st.session_state.keys()):
+            if str(key).startswith("survey_mapped_"):
+                del st.session_state[key]
+        st.session_state["survey_file_key"] = file_key
 
 uploaded = st.session_state.get("uploaded_file", None)
 if uploaded:
+    file_key = st.session_state.get("survey_file_key", uploaded.name)
     survey_path = save_uploaded_file(uploaded)
-    df = SurveyDataLoader().load(survey_path)
+    df_raw = SurveyDataLoader().load_raw(survey_path)
+    df = resolve_survey_columns(df_raw, file_key)
+    if df is None:
+        st.stop()
+
     pre = SurveyPreprocessor()
     df = pre.clean(df)
     df = pre.interpolate_missing(df)

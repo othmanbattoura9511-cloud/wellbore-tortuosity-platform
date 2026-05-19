@@ -1,5 +1,7 @@
-import pandas as pd
 import numpy as np
+import pandas as pd
+
+from column_mapping import missing_columns_message, standardize_survey_columns
 
 
 class SurveyPreprocessor:
@@ -12,12 +14,12 @@ class SurveyPreprocessor:
         self.dls_col = dls_col
 
     def clean(self, df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
-        df.columns = [str(c).strip() for c in df.columns]
-        required = [self.md_col, self.inc_col, self.azi_col]
-        missing = [c for c in required if c not in df.columns]
+        df, missing = standardize_survey_columns(df)
         if missing:
-            raise ValueError(f"Missing required columns: {missing}")
+            raise ValueError(missing_columns_message(missing, df.columns))
+
+        df = df.copy()
+        required = [self.md_col, self.inc_col, self.azi_col]
         for col in required + ([self.dls_col] if self.dls_col in df.columns else []):
             df[col] = pd.to_numeric(df[col], errors="coerce")
         df = df.dropna(subset=required)
