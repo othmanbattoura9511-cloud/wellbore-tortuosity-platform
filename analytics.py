@@ -88,7 +88,12 @@ def run_analytics_pipeline(df: pd.DataFrame, bha_intervals: Optional[pd.DataFram
 
 
 def comparison_table(df: pd.DataFrame, group_cols: List[str], value_cols: Optional[List[str]] = None) -> pd.DataFrame:
-    value_cols = value_cols or ["DLS", "Tortuosity_Index_Local"]
+    value_cols = value_cols or [
+        "DLS",
+        "Tortuosity_Index_Local",
+        "Build_Rate",
+        "Section_Confidence",
+    ]
     present = [c for c in value_cols if c in df.columns]
     if not present:
         return pd.DataFrame()

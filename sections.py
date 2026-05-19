@@ -1,22 +1,26 @@
 """
-Adaptive well-section classification from survey kinematics (any well profile).
+Engineering-oriented well-section classification from survey kinematics.
+
+Sections: Vertical, Build, Drop, Horizontal / Lateral.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 
 SECTION_LABELS = (
     "Vertical",
-    "Curve",
-    "Horizontal",
-    "Tangent",
-    "Transition",
+    "Build",
+    "Drop",
+    "Horizontal / Lateral",
 )
+
+# Display order for plots and comparison tables
+SECTION_ORDER = list(SECTION_LABELS)
 
 
 @dataclass
@@ -26,7 +30,7 @@ class SectionClassificationResult:
 
 
 class WellSectionClassifier:
-    """Classify survey stations using inclination, azimuth, DLS, and derived rates."""
+    """Classify survey stations using smoothed inclination, build rate, and DLS."""
 
     def __init__(
         self,
@@ -34,28 +38,34 @@ class WellSectionClassifier:
         inc_col: str = "Inclination",
         azi_col: str = "Azimuth",
         dls_col: str = "DLS",
+        smooth_window: int = 7,
+        min_interval_stations: int = 5,
+        hysteresis_margin: float = 0.12,
+        horizontal_inc_deg: float = 75.0,
     ):
         self.md_col = md_col
         self.inc_col = inc_col
         self.azi_col = azi_col
         self.dls_col = dls_col
+        self.smooth_window = max(3, smooth_window if smooth_window % 2 == 1 else smooth_window + 1)
+        self.min_interval_stations = max(2, min_interval_stations)
+        self.hysteresis_margin = hysteresis_margin
+        self.horizontal_inc_deg = horizontal_inc_deg
 
     def classify(self, df: pd.DataFrame) -> pd.DataFrame:
-        result = self.classify_with_confidence(df)
-        return result.survey
+        return self.classify_with_confidence(df).survey
 
     def classify_with_confidence(self, df: pd.DataFrame) -> SectionClassificationResult:
         work = self._prepare_kinematics(df)
         scores = self._section_scores(work)
-        labels, confidence = self._assign_labels(scores, work)
+        raw_labels, raw_confidence = self._score_to_labels(scores)
+        labels = self._apply_hysteresis(raw_labels, scores)
+        labels = self._merge_short_intervals(labels, scores, work[self.md_col])
+        confidence = self._interval_confidence(labels, scores, raw_confidence)
 
         out = work.copy()
-        out["Well_Section"] = labels
-        out["Section_Confidence"] = confidence
-        # Legacy lowercase alias used in some plots/filters
-        out["Well_Section_Legacy"] = out["Well_Section"].str.lower().replace(
-            {"horizontal": "lateral", "tangent": "hold"}
-        )
+        out["Well_Section"] = labels.values
+        out["Section_Confidence"] = confidence.values
 
         summary = self._build_summary(out)
         return SectionClassificationResult(survey=out, summary=summary)
@@ -78,101 +88,202 @@ class WellSectionClassifier:
             out[col] = out[col].replace([np.inf, -np.inf], np.nan)
             out[col] = out[col].interpolate(limit_direction="both").fillna(0.0)
 
+        w = self.smooth_window
+        out["Inclination_Smooth"] = (
+            out[self.inc_col].rolling(w, center=True, min_periods=1).median()
+        )
+        out["Build_Rate_Smooth"] = (
+            out["Build_Rate"].rolling(w, center=True, min_periods=1).median()
+        )
+        if self.dls_col in out.columns:
+            out["DLS_Smooth"] = (
+                pd.to_numeric(out[self.dls_col], errors="coerce")
+                .rolling(w, center=True, min_periods=1)
+                .median()
+                .fillna(0.0)
+            )
+        else:
+            out["DLS_Smooth"] = 0.0
+
         return out
 
     def _section_scores(self, df: pd.DataFrame) -> pd.DataFrame:
-        inc = df[self.inc_col].astype(float)
-        build = df["Build_Rate"].abs()
-        turn = df["Turn_Rate"].abs()
-        dls = df[self.dls_col].astype(float) if self.dls_col in df.columns else pd.Series(0.0, index=df.index)
+        inc = df["Inclination_Smooth"].astype(float)
+        build = df["Build_Rate_Smooth"].astype(float)
+        build_abs = build.abs()
+        dls = df["DLS_Smooth"].astype(float)
 
         inc_p25, inc_p50, inc_p75 = inc.quantile([0.25, 0.5, 0.75])
-        build_p50, build_p75 = build.quantile([0.5, 0.75])
-        turn_p50 = turn.quantile(0.5)
-        dls_p75 = dls.quantile(0.75) if dls.notna().any() else 0.0
+        inc_p85 = float(inc.quantile(0.85))
+        build_pos = build.clip(lower=0)
+        build_neg = (-build.clip(upper=0))
+        build_abs_p50 = build_abs.quantile(0.5)
+        build_abs_p75 = build_abs.quantile(0.75)
+        build_pos_p75 = build_pos.quantile(0.75) + 1e-6
+        build_neg_p75 = build_neg.quantile(0.75) + 1e-6
+        dls_p75 = dls.quantile(0.75) + 1e-6
 
-        # Adaptive gates — derived from the uploaded well, not fixed MD/inc limits.
+        horizontal_gate = max(self.horizontal_inc_deg, inc_p75)
+
+        # Vertical: low inclination, stable (low |build|), low DLS
         vertical = (
-            (1.0 - (inc / (inc_p50 + 1e-6)).clip(0, 1.5))
-            + (1.0 - (build / (build_p75 + 1e-6)).clip(0, 2))
-            + (1.0 - (turn / (turn_p50 + 1e-6)).clip(0, 2))
+            (1.0 - (inc / (inc_p50 + 1e-6)).clip(0, 2))
+            + (1.0 - (build_abs / (build_abs_p75 + 1e-6)).clip(0, 2))
+            + (1.0 - (dls / dls_p75).clip(0, 2))
         ) / 3.0
 
+        # Build: positive inclination gradient, sustained build
+        build_score = (
+            (build_pos / build_pos_p75).clip(0, 3)
+            + (build_pos.rolling(self.smooth_window, center=True, min_periods=1).mean() / build_pos_p75).clip(0, 2)
+        ) / 2.0
+        build_score = build_score * (inc < horizontal_gate).astype(float)
+
+        # Drop: negative inclination gradient, sustained drop
+        drop_score = (
+            (build_neg / build_neg_p75).clip(0, 3)
+            + (build_neg.rolling(self.smooth_window, center=True, min_periods=1).mean() / build_neg_p75).clip(0, 2)
+        ) / 2.0
+        drop_score = drop_score * (inc < horizontal_gate).astype(float)
+
+        # Horizontal / Lateral: high inclination, stable near horizontal
         horizontal = (
-            ((inc - inc_p75).clip(lower=0) / (inc.max() - inc_p75 + 1e-6))
-            + (1.0 - (build / (build_p50 + 1e-6)).clip(0, 2))
-            + ((inc >= inc_p75).astype(float))
+            ((inc - horizontal_gate).clip(lower=0) / (inc.max() - horizontal_gate + 1e-6))
+            + (1.0 - (build_abs / (build_abs_p50 + 1e-6)).clip(0, 2))
+            + ((inc >= horizontal_gate).astype(float))
         ) / 3.0
-
-        curve = (
-            (build / (build_p75 + 1e-6)).clip(0, 3)
-            + (df["Inclination_Gradient"].abs() / (build_p75 + 1e-6)).clip(0, 3)
-            + (dls / (dls_p75 + 1e-6)).clip(0, 3)
-        ) / 3.0
-
-        tangent = (
-            ((inc - inc_p25).clip(lower=0) / (inc_p75 - inc_p25 + 1e-6)).clip(0, 1)
-            * (1.0 - (build / (build_p50 + 1e-6)).clip(0, 2))
-            * (1.0 - (turn / (turn_p50 + 1e-6)).clip(0, 2))
-        )
-
-        # Transition: ambiguous boundaries (mid inclination with mixed signals).
-        transition = (
-            (1.0 - (inc - inc_p50).abs() / (inc.std() + 1e-6)).clip(0, 1)
-            * (build / (build_p50 + 1e-6)).clip(0, 2)
-            * 0.5
-        )
 
         scores = pd.DataFrame(
             {
                 "Vertical": vertical.clip(0, 1),
-                "Curve": curve.clip(0, 1),
-                "Horizontal": horizontal.clip(0, 1),
-                "Tangent": tangent.clip(0, 1),
-                "Transition": transition.clip(0, 1),
+                "Build": build_score.clip(0, 1),
+                "Drop": drop_score.clip(0, 1),
+                "Horizontal / Lateral": horizontal.clip(0, 1),
             },
             index=df.index,
         )
+
+        # Suppress conflicting build/drop when nearly flat
+        flat = build_abs < (build_abs_p50 * 0.35 + 1e-6)
+        scores.loc[flat, "Build"] *= 0.25
+        scores.loc[flat, "Drop"] *= 0.25
+        scores.loc[inc >= horizontal_gate, "Vertical"] *= 0.2
+        scores.loc[inc <= inc_p25, ["Build", "Drop"]] *= 0.5
+
+        # Low-angle wells: gentle inclination drift stays vertical, not build/drop.
+        if float(inc.max()) < 20.0:
+            gentle = build_abs < max(0.2, build_abs_p75 * 0.6)
+            scores.loc[gentle, "Vertical"] = (scores.loc[gentle, "Vertical"] + 0.35).clip(0, 1)
+            scores.loc[gentle, ["Build", "Drop"]] *= 0.3
+
         return scores
 
-    def _assign_labels(self, scores: pd.DataFrame, df: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
-        inc = df[self.inc_col].astype(float)
-        build = df["Build_Rate"].abs()
-        inc_p20, inc_p80 = inc.quantile([0.2, 0.8])
-        build_p50, build_p75 = build.quantile([0.5, 0.75])
-
+    def _score_to_labels(self, scores: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
         ranked = scores.values.argsort(axis=1)
         top = scores.columns[ranked[:, -1]]
         top_score = scores.max(axis=1)
         second_score = scores.apply(lambda row: row.nlargest(2).iloc[-1], axis=1)
         margin = (top_score - second_score).clip(lower=0)
-
         labels = pd.Series(top, index=scores.index, dtype=object)
-        inc_span = float(inc.max() - inc.min())
-        inc_p90 = float(inc.quantile(0.9))
-
-        # Engineering overrides (adaptive percentiles from the uploaded well).
-        if inc_p90 < 15.0:
-            build_p90 = build.quantile(0.9)
-            labels.loc[build <= build_p90] = "Vertical"
-            labels.loc[build > build_p90] = "Curve"
-        else:
-            labels.loc[(inc <= inc_p20) & (build <= build_p75)] = "Vertical"
-            labels.loc[(inc >= inc_p80) & (build <= build_p50) & (inc_span > 20)] = "Horizontal"
-            labels.loc[build >= build_p75] = "Curve"
-
-        ambiguous = (margin < 0.1) & (top_score < 0.4)
-        labels.loc[ambiguous] = "Transition"
-
-        confidence = (top_score / (scores.sum(axis=1) + 1e-6)).clip(0, 1)
-        confidence.loc[ambiguous] = confidence.loc[ambiguous] * 0.75
+        confidence = (margin + top_score) / (scores.sum(axis=1) + 1e-6)
+        confidence = confidence.clip(0, 1)
         return labels, confidence
+
+    def _apply_hysteresis(self, labels: pd.Series, scores: pd.DataFrame) -> pd.Series:
+        if labels.empty:
+            return labels
+        out = labels.copy()
+        current = out.iloc[0]
+        for i in range(1, len(out)):
+            candidate = out.iloc[i]
+            if candidate == current:
+                continue
+            cur_score = scores.iloc[i][current]
+            new_score = scores.iloc[i][candidate]
+            if new_score >= cur_score + self.hysteresis_margin:
+                current = candidate
+            out.iloc[i] = current
+        return out
+
+    def _merge_short_intervals(
+        self, labels: pd.Series, scores: pd.DataFrame, md: pd.Series
+    ) -> pd.Series:
+        if len(labels) < 2:
+            return labels
+
+        min_len = self.min_interval_stations
+        n = len(labels)
+        arr = labels.to_numpy(copy=True)
+        i = 0
+        while i < n:
+            j = i + 1
+            while j < n and arr[j] == arr[i]:
+                j += 1
+            run_len = j - i
+            if run_len < min_len:
+                left = arr[i - 1] if i > 0 else None
+                right = arr[j] if j < n else None
+                replacement = self._pick_merge_target(left, right, scores.iloc[i:j].mean())
+                arr[i:j] = replacement
+            i = j
+
+        return pd.Series(arr, index=labels.index, dtype=object)
+
+    @staticmethod
+    def _pick_merge_target(
+        left: str | None, right: str | None, run_means: pd.Series
+    ) -> str:
+        candidates = [c for c in (left, right) if c is not None]
+        if not candidates:
+            return str(run_means.idxmax())
+        if len(candidates) == 1:
+            return candidates[0]
+        left_score = run_means.get(left, 0.0)
+        right_score = run_means.get(right, 0.0)
+        return left if left_score >= right_score else right
+
+    def _interval_confidence(
+        self,
+        labels: pd.Series,
+        scores: pd.DataFrame,
+        raw_confidence: pd.Series,
+    ) -> pd.Series:
+        conf = raw_confidence.copy()
+        for section in SECTION_LABELS:
+            mask = labels == section
+            if not mask.any():
+                continue
+            section_score = scores.loc[mask, section]
+            conf.loc[mask] = (conf.loc[mask] * 0.4 + section_score * 0.6).clip(0, 1)
+        return conf
 
     def _build_summary(self, df: pd.DataFrame) -> Dict[str, float | int | str]:
         counts = df["Well_Section"].value_counts().to_dict()
+        interval_stats: List[Dict[str, object]] = []
+        labels = df["Well_Section"].to_numpy()
+        md = df[self.md_col].to_numpy()
+        i = 0
+        n = len(labels)
+        while i < n:
+            j = i + 1
+            while j < n and labels[j] == labels[i]:
+                j += 1
+            interval_stats.append(
+                {
+                    "section": labels[i],
+                    "md_in": float(md[i]),
+                    "md_out": float(md[j - 1]),
+                    "length_m": float(md[j - 1] - md[i]) if j > i else 0.0,
+                    "stations": j - i,
+                    "mean_confidence": float(df["Section_Confidence"].iloc[i:j].mean()),
+                }
+            )
+            i = j
+
         return {
             "n_stations": int(len(df)),
             "mean_confidence": float(df["Section_Confidence"].mean()),
             "section_counts": counts,
             "dominant_section": df["Well_Section"].mode().iloc[0] if len(df) else "Unknown",
+            "intervals": interval_stats,
         }

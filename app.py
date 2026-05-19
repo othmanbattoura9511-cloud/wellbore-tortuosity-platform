@@ -138,7 +138,7 @@ def _show_comparison_table(df: pd.DataFrame, group_cols: list[str], title: str) 
 
 st.set_page_config(page_title="Wellbore Tortuosity Platform", layout="wide", initial_sidebar_state="expanded")
 st.title("Wellbore Tortuosity Analytics Platform")
-st.caption("Adaptive section classification · patterns · RSS · multi-well comparisons")
+st.caption("Vertical / Build / Drop / Lateral sections · patterns · RSS · multi-well comparisons")
 
 with st.sidebar:
     st.header("Data inputs")
@@ -217,13 +217,20 @@ with tab_sections:
         st.plotly_chart(fig, use_container_width=True)
 
 with tab_compare:
-    _show_comparison_table(df, ["Well_Section"], "Vertical / Curve / Horizontal (V·C·H)")
-    _show_comparison_table(df, ["Well_Section", "Drilling_System"], "Drilling system vs section")
-    _show_comparison_table(df, ["RSS_Type"], "RSS push vs point")
-    _show_comparison_table(df, ["Hole_Size"], "Hole size comparison")
+    _show_comparison_table(
+        df,
+        ["Well_Section"],
+        "Vertical vs Build vs Drop vs Horizontal / Lateral",
+    )
+    _show_comparison_table(df, ["Drilling_System"], "Motor vs RSS (drilling system)")
+    _show_comparison_table(df, ["RSS_Type"], "Push-the-bit vs Point-the-bit")
+    _show_comparison_table(df, ["Hole_Size"], "Hole size")
+    _show_comparison_table(df, ["Pattern_Type"], "Pattern type")
+    _show_comparison_table(df, ["Well_Section", "Drilling_System"], "Section × drilling system")
+    _show_comparison_table(df, ["Well_Section", "RSS_Type"], "Section × RSS steering mode")
+    _show_comparison_table(df, ["Well_Section", "Hole_Size"], "Section × hole size")
+    _show_comparison_table(df, ["Well_Section", "Pattern_Type"], "Section × pattern type")
     _show_comparison_table(df, ["BHA"], "BHA comparison")
-    _show_comparison_table(df, ["Pattern_Type"], "Pattern type comparison")
-    _show_comparison_table(df, ["Well_Section", "Pattern_Type"], "Pattern by section")
 
 with tab_patterns:
     st.json(result.pattern_summary)

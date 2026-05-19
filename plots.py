@@ -1,12 +1,15 @@
+import pandas as pd
 import plotly.express as px
+
+from sections import SECTION_ORDER
 
 
 SECTION_COLORS = {
     "Vertical": "#2e7d32",
-    "Curve": "#fb8c00",
+    "Build": "#ef6c00",
+    "Drop": "#c62828",
+    "Horizontal / Lateral": "#1565c0",
     "Horizontal": "#1565c0",
-    "Tangent": "#6a1b9a",
-    "Transition": "#757575",
 }
 
 PATTERN_COLORS = {
@@ -16,6 +19,13 @@ PATTERN_COLORS = {
     "Micro-tortuosity": "#c62828",
     "Chaotic": "#ef6c00",
 }
+
+
+def _section_color_map(df: pd.DataFrame) -> dict:
+    present = [s for s in SECTION_ORDER if s in df.get("Well_Section", pd.Series(dtype=str)).unique()]
+    legacy = [s for s in df["Well_Section"].unique() if s not in present]
+    ordered = present + list(legacy)
+    return {s: SECTION_COLORS.get(s, "#757575") for s in ordered}
 
 
 class WellPlots:
@@ -38,19 +48,25 @@ class WellPlots:
             return None
         counts = df["Well_Section"].value_counts().reset_index()
         counts.columns = ["Well_Section", "count"]
+        color_map = _section_color_map(df)
+        counts["Well_Section"] = pd.Categorical(
+            counts["Well_Section"], categories=list(color_map.keys()), ordered=True
+        )
         return px.bar(
             counts,
             x="Well_Section",
             y="count",
             color="Well_Section",
-            color_discrete_map=SECTION_COLORS,
+            color_discrete_map=color_map,
             title="Well section distribution",
+            category_orders={"Well_Section": list(color_map.keys())},
         )
 
     def plot_pattern_by_section(self, df):
         if "Pattern_Type" not in df.columns or "Well_Section" not in df.columns:
             return None
-        cross = df.groupby(["Well_Section", "Pattern_Type"]).size().reset_index(name="count")
+        cross = df.groupby(["Well_Section", "Pattern_Type"], observed=False).size().reset_index(name="count")
+        color_map = _section_color_map(df)
         return px.bar(
             cross,
             x="Well_Section",
@@ -59,18 +75,21 @@ class WellPlots:
             color_discrete_map=PATTERN_COLORS,
             title="Pattern distribution by section",
             barmode="group",
+            category_orders={"Well_Section": list(color_map.keys())},
         )
 
     def plot_tortuosity_by_section(self, df):
         if "Well_Section" not in df.columns or "Tortuosity_Index_Local" not in df.columns:
             return None
+        color_map = _section_color_map(df)
         return px.box(
             df,
             x="Well_Section",
             y="Tortuosity_Index_Local",
             color="Well_Section",
-            color_discrete_map=SECTION_COLORS,
+            color_discrete_map=color_map,
             title="Tortuosity by well section",
+            category_orders={"Well_Section": list(color_map.keys())},
         )
 
     def plot_rss_distribution(self, df):
