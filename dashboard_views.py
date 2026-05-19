@@ -24,7 +24,7 @@ def _dominant_section(section_mix: dict[str, float]) -> str:
     if not section_mix:
         return "—"
     code = max(section_mix, key=section_mix.get)
-    labels = {"Vertical": "Vertical", "Curve": "Curve / Build", "Lateral": "Lateral"}
+    labels = {"Vertical": "Vertical", "Curve": "Curve", "Lateral": "Lateral"}
     name = next((k for k, v in SECTION_CODES.items() if v == code), code)
     return f"{code} — {labels.get(name, name)}"
 
@@ -36,7 +36,7 @@ def build_section_engineering_table(df: pd.DataFrame) -> pd.DataFrame:
 
     tort_col = "Tortuosity_Index" if "Tortuosity_Index" in df.columns else "Tortuosity_Index_Local"
     rows: list[dict[str, Any]] = []
-    section_labels = {"Vertical": "Vertical", "Curve": "Curve / Build", "Lateral": "Lateral"}
+    section_labels = {"Vertical": "Vertical", "Curve": "Curve", "Lateral": "Lateral"}
     for label, code in SECTION_CODES.items():
         display_label = section_labels.get(label, label)
         block = df[df["Section_Code"] == code]
@@ -159,7 +159,7 @@ def render_overview_tab(
             st.plotly_chart(dist, use_container_width=True)
 
 def render_section_analysis_tab(df_full: pd.DataFrame, plots: WellPlots) -> None:
-    st.markdown("Engineering analysis by **V Vertical**, **C Curve / Build**, and **L Lateral**.")
+    st.markdown("Engineering analysis by **V — Vertical**, **C — Curve**, and **L — Lateral**.")
     table = build_section_engineering_table(df_full)
     if table.empty:
         st.caption("No classified sections in the current survey.")

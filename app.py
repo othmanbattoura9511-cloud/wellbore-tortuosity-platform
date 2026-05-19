@@ -24,6 +24,7 @@ from loaders import SurveyDataLoader
 from paths import PROJECT_ROOT, SAMPLE_SURVEY_CSV
 from plots import WellPlots
 from sections import filter_by_section_codes
+from display_labels import show_data_editor
 from ui_theme import (
     bha_editor_column_config,
     inject_theme,
@@ -131,7 +132,7 @@ with st.sidebar:
 
     st.header("Section filter")
     filt_v = st.checkbox("V — Vertical", True)
-    filt_c = st.checkbox("C — Curve / Build", True)
+    filt_c = st.checkbox("C — Curve", True)
     filt_l = st.checkbox("L — Lateral", True)
     section_codes = [c for c, on in zip(["V", "C", "L"], [filt_v, filt_c, filt_l]) if on]
     if SAMPLE_SURVEY_CSV.is_file():
@@ -195,12 +196,13 @@ with tab_systems:
     if "bha_intervals_raw" in st.session_state and not st.session_state["bha_intervals_raw"].empty:
         st.markdown("##### Map BHA intervals to survey MD")
         editor_df = prepare_bha_for_editor(st.session_state["bha_intervals_raw"])
-        edited = st.data_editor(
+        edited = show_data_editor(
             editor_df,
             use_container_width=True,
             num_rows="dynamic",
             column_config=bha_editor_column_config(),
             key="bha_intervals_editor",
+            csv_filename="bha_intervals.csv",
         )
         if st.button("Apply BHA MD mapping", type="primary"):
             st.session_state["bha_intervals"] = normalize_bha_intervals(prepare_bha_from_editor(edited))

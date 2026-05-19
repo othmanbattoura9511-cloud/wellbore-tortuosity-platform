@@ -24,9 +24,8 @@ def inject_theme() -> None:
             margin-bottom: 1rem;
             box-shadow: 0 1px 4px rgba(26, 35, 50, 0.06);
         }
-        .dashboard-hero h1 { color: #1a2332; font-size: 1.75rem; font-weight: 700; margin: 0 0 0.3rem 0; }
-        .dashboard-hero .tagline { color: #5c6b7a; margin: 0; font-size: 0.98rem; line-height: 1.45; }
-        .dashboard-hero .chips { margin-top: 0.5rem; color: #5c6b7a; font-size: 0.82rem; }
+        .dashboard-hero h1 { color: #1a2332; font-size: 2rem; font-weight: 700; margin: 0 0 0.4rem 0; }
+        .dashboard-hero .tagline { color: #5c6b7a; margin: 0; font-size: 0.9rem; line-height: 1.5; }
         div[data-testid="metric-container"] {
             background: #ffffff;
             border: 1px solid #dde3ea;
@@ -70,9 +69,8 @@ def inject_theme() -> None:
 def render_header() -> None:
     st.markdown(
         '<div class="dashboard-hero">'
-        "<h1>Wellbore Tortuosity Analytics</h1>"
-        '<p class="tagline">Drilling engineering analytics and BHA performance platform</p>'
-        '<p class="chips">V Vertical · C Curve / Build · L Lateral · Motor vs RSS · multi-BHA</p>'
+        "<h1>Wellbore Tortuosity Analytics Platform</h1>"
+        '<p class="tagline">Survey · tortuosity · pattern recognition · RSS steering · BHA intelligence · ML features</p>'
         "</div>",
         unsafe_allow_html=True,
     )
@@ -122,7 +120,7 @@ def render_wellpath_hero(df: pd.DataFrame) -> None:
     if "Section_Code" in work.columns:
         for code, label, c in [
             ("V", "Vertical", PALETTE["vertical"]),
-            ("C", "Curve / Build", PALETTE["curve"]),
+            ("C", "Curve", PALETTE["curve"]),
             ("L", "Lateral", PALETTE["lateral"]),
         ]:
             sub = work[work["Section_Code"] == code]
