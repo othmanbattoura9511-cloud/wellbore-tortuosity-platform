@@ -8,12 +8,20 @@ from column_mapping import (
     normalize_column_name,
     standardize_survey_columns,
 )
-from paths import resolve_project_path
+from paths import is_allowed_read_path, resolve_project_path
 
 
 class SurveyDataLoader:
     def _resolve_path(self, path) -> Path:
-        return resolve_project_path(path)
+        candidate = Path(path)
+        if candidate.is_absolute():
+            resolved = candidate.resolve()
+            if is_allowed_read_path(resolved):
+                return resolved
+            raise FileNotFoundError(
+                f"Cannot open absolute path (not in project or temp uploads): {candidate}"
+            )
+        return resolve_project_path(candidate)
 
     def load_raw(self, path) -> pd.DataFrame:
         """Load survey file without requiring standard column names."""

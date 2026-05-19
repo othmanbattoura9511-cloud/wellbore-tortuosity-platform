@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import tempfile
 from pathlib import Path
 
 import pandas as pd
@@ -21,14 +20,7 @@ from loaders import SurveyDataLoader
 from paths import PROJECT_ROOT, SAMPLE_SURVEY_CSV
 from plots import WellPlots
 from survey_quality import SurveyQualityAnalyzer
-
-
-def save_uploaded_file(uploaded_file) -> Path:
-    suffix = Path(uploaded_file.name).suffix or ".dat"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(uploaded_file.getbuffer())
-        tmp.flush()
-        return Path(tmp.name)
+from upload_utils import save_uploaded_file, uploaded_file_key
 
 
 def _clear_survey_mapping_state() -> None:
@@ -134,7 +126,7 @@ with st.sidebar:
 
     uploaded_file = st.file_uploader("Survey file", type=["xlsx", "xls", "csv"], key="survey_file_uploader")
     if uploaded_file is not None:
-        file_key = f"{uploaded_file.name}:{getattr(uploaded_file, 'size', 0)}"
+        file_key = uploaded_file_key(uploaded_file)
         if st.session_state.get("survey_file_key") != file_key:
             st.session_state["survey_source"] = "upload"
             st.session_state["uploaded_file"] = uploaded_file
