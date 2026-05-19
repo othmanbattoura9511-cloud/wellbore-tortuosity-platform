@@ -1,6 +1,5 @@
-from pathlib import Path
-
 import pandas as pd
+from pathlib import Path
 
 from column_mapping import (
     REQUIRED_SURVEY_COLUMNS,
@@ -9,12 +8,18 @@ from column_mapping import (
     normalize_column_name,
     standardize_survey_columns,
 )
+from paths import resolve_project_path
 
 
 class SurveyDataLoader:
+    def _resolve_path(self, path) -> Path:
+        return resolve_project_path(path)
+
     def load_raw(self, path) -> pd.DataFrame:
         """Load survey file without requiring standard column names."""
-        path = Path(path)
+        path = self._resolve_path(path)
+        if not path.is_file():
+            raise FileNotFoundError(f"Survey file not found: {path}")
 
         if path.suffix.lower() == ".csv":
             return pd.read_csv(path)

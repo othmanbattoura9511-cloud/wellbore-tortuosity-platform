@@ -12,6 +12,7 @@ from column_mapping import (
     suggest_column_index,
 )
 from loaders import SurveyDataLoader
+from paths import PROJECT_ROOT, SAMPLE_SURVEY_CSV
 from preprocess import SurveyPreprocessor
 from sections import WellSectionClassifier
 from survey_quality import SurveyQualityAnalyzer
@@ -21,10 +22,17 @@ from plots import WellPlots
 
 def save_uploaded_file(uploaded_file):
     """Persist Streamlit UploadedFile to a temp path for pathlib-based loaders."""
-    suffix = Path(uploaded_file.name).suffix
+    suffix = Path(uploaded_file.name).suffix or ".dat"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(uploaded_file.getbuffer())
-        return tmp.name
+        tmp.flush()
+        return Path(tmp.name)
+
+
+def _clear_survey_mapping_state() -> None:
+    for key in list(st.session_state.keys()):
+        if str(key).startswith("survey_mapped_"):
+            del st.session_state[key]
 
 
 def resolve_survey_columns(df: pd.DataFrame, file_key: str) -> pd.DataFrame | None:
@@ -104,10 +112,33 @@ bha_runs = pd.DataFrame([
         "Bit_Type": "Unknown",
     }
 ])
-uploaded = st.file_uploader(
-    "Upload survey file",
-    type=["xlsx", "xls", "csv"]
-)
+with st.sidebar:
+    st.subheader("Survey input")
+    if st.button("Load sample survey", use_container_width=True):
+        st.session_state["survey_source"] = "sample"
+        st.session_state.pop("uploaded_file", None)
+        st.session_state.pop("survey_file_key", None)
+        _clear_survey_mapping_state()
+        st.rerun()
+
+    uploaded_file = st.file_uploader(
+        "Upload survey file",
+        type=["xlsx", "xls", "csv"],
+        key="survey_file_uploader",
+    )
+    if uploaded_file is not None:
+        file_key = f"{uploaded_file.name}:{getattr(uploaded_file, 'size', 0)}"
+        if st.session_state.get("survey_file_key") != file_key:
+            st.session_state["survey_source"] = "upload"
+            st.session_state["uploaded_file"] = uploaded_file
+            st.session_state["survey_file_key"] = file_key
+            _clear_survey_mapping_state()
+
+    if SAMPLE_SURVEY_CSV.is_file():
+        st.caption(f"Sample: `{SAMPLE_SURVEY_CSV.relative_to(PROJECT_ROOT).as_posix()}`")
+    else:
+        st.caption("Sample CSV not bundled; run `python generate_sample_data.py`.")
+
 bha_files = st.file_uploader(
     "Upload BHA Report PDFs",
     type=["pdf"],
@@ -228,157 +259,162 @@ if bha_files:
 if bha_pdf_rows:
     st.subheader("Extracted BHA Summary from PDFs")
     st.dataframe(pd.DataFrame(bha_pdf_rows), use_container_width=True)
-if uploaded is not None:
-    st.session_state["uploaded_file"] = uploaded
-    file_key = f"{uploaded.name}:{getattr(uploaded, 'size', 0)}"
-    if st.session_state.get("survey_file_key") != file_key:
-        for key in list(st.session_state.keys()):
-            if str(key).startswith("survey_mapped_"):
-                del st.session_state[key]
-        st.session_state["survey_file_key"] = file_key
 
-uploaded = st.session_state.get("uploaded_file", None)
-if uploaded:
-    file_key = st.session_state.get("survey_file_key", uploaded.name)
-    survey_path = save_uploaded_file(uploaded)
-    df_raw = SurveyDataLoader().load_raw(survey_path)
-    df = resolve_survey_columns(df_raw, file_key)
-    if df is None:
+survey_source = st.session_state.get("survey_source")
+df = None
+if survey_source == "sample":
+    if not SAMPLE_SURVEY_CSV.is_file():
+        st.error(
+            f"Sample survey not found at `{SAMPLE_SURVEY_CSV.relative_to(PROJECT_ROOT).as_posix()}`. "
+            "Run `python generate_sample_data.py` in the project root."
+        )
         st.stop()
+    file_key = "sample:synthetic_survey"
+    df_raw = SurveyDataLoader().load_raw(SAMPLE_SURVEY_CSV)
+    df = resolve_survey_columns(df_raw, file_key)
+elif survey_source == "upload":
+    uploaded = st.session_state.get("uploaded_file")
+    if uploaded:
+        file_key = st.session_state.get("survey_file_key", uploaded.name)
+        survey_tmp = save_uploaded_file(uploaded)
+        df_raw = SurveyDataLoader().load_raw(survey_tmp)
+        df = resolve_survey_columns(df_raw, file_key)
 
-    pre = SurveyPreprocessor()
-    df = pre.clean(df)
-    df = pre.interpolate_missing(df)
-    df = WellSectionClassifier().classify(df)
-    if "DLS" not in df.columns:
-        df = TortuosityAnalyzer().calculate_dls(df)
-        df["DLS"] = df["DLS_Calc"]
-    df = TortuosityAnalyzer().add_indicators(df)
-    df["BHA"] = "Unknown"
-    df["Drilling_System"] = "Unknown"
-    df["Hole_Size"] = "Unknown"
-    df["Bit_Type"] = "Unknown"
+if df is None:
+    st.info("Upload a survey file in the sidebar, or click **Load sample survey** to try the demo dataset.")
+    st.stop()
 
-    for _, row in bha_runs.iterrows():
-        mask = (df["MD"] >= row["MD_In"]) & (df["MD"] <= row["MD_Out"])
-        df.loc[mask, "BHA"] = row["BHA"]
-        df.loc[mask, "Drilling_System"] = row["Drilling_System"]
-        df.loc[mask, "Hole_Size"] = row["Hole_Size"]
-        df.loc[mask, "Bit_Type"] = row["Bit_Type"]
-    quality = SurveyQualityAnalyzer().evaluate(df)
-    st.write(quality)
-    st.dataframe(df, use_container_width=True)
-    st.subheader("Analysis by Drilling System")
-    st.dataframe(
-        df.groupby("Drilling_System")["DLS"].describe(),
-        use_container_width=True
-    )
+pre = SurveyPreprocessor()
+df = pre.clean(df)
+df = pre.interpolate_missing(df)
+df = WellSectionClassifier().classify(df)
+if "DLS" not in df.columns:
+    df = TortuosityAnalyzer().calculate_dls(df)
+    df["DLS"] = df["DLS_Calc"]
+df = TortuosityAnalyzer().add_indicators(df)
+df["BHA"] = "Unknown"
+df["Drilling_System"] = "Unknown"
+df["Hole_Size"] = "Unknown"
+df["Bit_Type"] = "Unknown"
 
-    st.subheader("Analysis by Well Section")
-    st.dataframe(
+for _, row in bha_runs.iterrows():
+    mask = (df["MD"] >= row["MD_In"]) & (df["MD"] <= row["MD_Out"])
+    df.loc[mask, "BHA"] = row["BHA"]
+    df.loc[mask, "Drilling_System"] = row["Drilling_System"]
+    df.loc[mask, "Hole_Size"] = row["Hole_Size"]
+    df.loc[mask, "Bit_Type"] = row["Bit_Type"]
+quality = SurveyQualityAnalyzer().evaluate(df)
+st.write(quality)
+st.dataframe(df, use_container_width=True)
+st.subheader("Analysis by Drilling System")
+st.dataframe(
+    df.groupby("Drilling_System")["DLS"].describe(),
+    use_container_width=True,
+)
+
+st.subheader("Analysis by Well Section")
+st.dataframe(
     df.groupby("Well_Section")["DLS"].describe(),
-    use_container_width=True
-    )
+    use_container_width=True,
+)
 
-    st.subheader("Analysis by BHA")
-    st.subheader("Comparison by Hole Size")
+st.subheader("Analysis by BHA")
+st.subheader("Comparison by Hole Size")
 
-    hole_summary = (
-        df.groupby("Hole_Size")["DLS"]
-        .agg(["count", "mean", "max", "std"])
-        .reset_index()
-    )
+hole_summary = (
+    df.groupby("Hole_Size")["DLS"]
+    .agg(["count", "mean", "max", "std"])
+    .reset_index()
+)
 
-    st.dataframe(hole_summary, use_container_width=True)
+st.dataframe(hole_summary, use_container_width=True)
 
+st.subheader("Comparison by Drilling System")
 
-    st.subheader("Comparison by Drilling System")
+system_summary = (
+    df.groupby("Drilling_System")["DLS"]
+    .agg(["count", "mean", "max", "std"])
+    .reset_index()
+)
 
-    system_summary = (
-        df.groupby("Drilling_System")["DLS"]
-        .agg(["count", "mean", "max", "std"])
-        .reset_index()
-    )
+st.dataframe(system_summary, use_container_width=True)
 
-    st.dataframe(system_summary, use_container_width=True)
+st.subheader("Comparison by BHA")
 
+bha_summary = (
+    df.groupby("BHA")["DLS"]
+    .agg(["count", "mean", "max", "std"])
+    .reset_index()
+)
 
-    st.subheader("Comparison by BHA")
+st.dataframe(bha_summary, use_container_width=True)
+st.dataframe(
+    df.groupby("BHA")["DLS"].describe(),
+    use_container_width=True,
+)
+st.subheader("Comparison by Hole Size")
+st.dataframe(
+    df.groupby("Hole_Size")[["DLS", "Tortuosity_Index_Local", "Delta_MD"]].agg(
+        ["count", "mean", "max", "std"]
+    ),
+    use_container_width=True,
+)
 
-    bha_summary = (
-        df.groupby("BHA")["DLS"]
-        .agg(["count", "mean", "max", "std"])
-        .reset_index()
-    )
+st.subheader("Comparison by Drilling System")
+st.dataframe(
+    df.groupby("Drilling_System")[["DLS", "Tortuosity_Index_Local", "Delta_MD"]].agg(
+        ["count", "mean", "max", "std"]
+    ),
+    use_container_width=True,
+)
 
-    st.dataframe(bha_summary, use_container_width=True)
-    st.dataframe(
-        df.groupby("BHA")["DLS"].describe(),
-        use_container_width=True
-    )
-    st.subheader("Comparison by Hole Size")
-    st.dataframe(
-        df.groupby("Hole_Size")[["DLS", "Tortuosity_Index_Local", "Delta_MD"]].agg(
-            ["count", "mean", "max", "std"]
-        ),
-        use_container_width=True
-    )
+st.subheader("Comparison by Well Section and Drilling System")
+st.dataframe(
+    df.groupby(["Well_Section", "Drilling_System"])[["DLS", "Tortuosity_Index_Local"]].agg(
+        ["count", "mean", "max", "std"]
+    ),
+    use_container_width=True,
+)
+st.subheader("KPIs")
+c1, c2, c3, c4, c5 = st.columns(5)
 
-    st.subheader("Comparison by Drilling System")
-    st.dataframe(
-        df.groupby("Drilling_System")[["DLS", "Tortuosity_Index_Local", "Delta_MD"]].agg(
-            ["count", "mean", "max", "std"]
-        ),
-        use_container_width=True
-    )
+c1.metric("Surveys", quality["n_surveys"])
 
-    st.subheader("Comparison by Well Section and Drilling System")
-    st.dataframe(
-        df.groupby(["Well_Section", "Drilling_System"])[["DLS", "Tortuosity_Index_Local"]].agg(
-            ["count", "mean", "max", "std"]
-        ),
-        use_container_width=True
-    )
-    st.subheader("KPIs")
-    c1, c2, c3, c4, c5 = st.columns(5)
+c2.metric(
+    "Mean Spacing",
+    f"{quality['mean_spacing']:.2f}",
+)
 
-    c1.metric("Surveys", quality["n_surveys"])
+c3.metric(
+    "Max DLS",
+    f"{quality.get('max_dls', 0):.2f}",
+)
 
-    c2.metric(
-        "Mean Spacing",
-        f"{quality['mean_spacing']:.2f}"
-    )
+c4.metric(
+    "Mean DLS",
+    f"{quality.get('mean_dls', 0):.2f}",
+)
 
-    c3.metric(
-        "Max DLS",
-        f"{quality.get('max_dls', 0):.2f}"
-    )
+c5.metric(
+    "Poor Spacing %",
+    f"{quality['poor_spacing_pct']:.1f}%",
+)
+section_option = st.selectbox(
+    "Select Well Section",
+    ["All", "vertical", "curve", "lateral"],
+)
+if section_option == "All":
+    filtered_df = df
+else:
+    filtered_df = df[df["Well_Section"] == section_option]
 
-    c4.metric(
-        "Mean DLS",
-        f"{quality.get('mean_dls', 0):.2f}"
-    )
+plots = WellPlots()
 
-    c5.metric(
-        "Poor Spacing %",
-        f"{quality['poor_spacing_pct']:.1f}%"
-    )
-    section_option = st.selectbox(
-        "Select Well Section",
-        ["All", "vertical", "curve", "lateral"]
-    )
-    if section_option == "All":
-            filtered_df = df
-    else:
-            filtered_df = df[df["Well_Section"] == section_option]
+st.plotly_chart(plots.plot_inclination(filtered_df, color_col="Well_Section"), use_container_width=True)
+st.plotly_chart(plots.plot_dls(filtered_df, color_col="Well_Section"), use_container_width=True)
+st.plotly_chart(plots.plot_azimuth(filtered_df, color_col="Well_Section"), use_container_width=True)
+st.plotly_chart(plots.plot_tortuosity_map(filtered_df), use_container_width=True)
 
-            plots = WellPlots()
-
-            st.plotly_chart(plots.plot_inclination(filtered_df, color_col="Well_Section"), use_container_width=True)
-            st.plotly_chart(plots.plot_dls(filtered_df, color_col="Well_Section"), use_container_width=True)
-            st.plotly_chart(plots.plot_azimuth(filtered_df, color_col="Well_Section"), use_container_width=True)
-            st.plotly_chart(plots.plot_tortuosity_map(filtered_df), use_container_width=True)
-
-            st.subheader("Cleaned Data Preview")
-            st.dataframe(filtered_df, use_container_width=True)
+st.subheader("Cleaned Data Preview")
+st.dataframe(filtered_df, use_container_width=True)
 
