@@ -5,8 +5,8 @@ headless = true
 gatherUsageStats = false
 
 [theme]
-primaryColor = "#d4a017"
-backgroundColor = "#0f1419"
-secondaryBackgroundColor = "#1a2332"
-textColor = "#e8eef4"
+primaryColor = "#1565c0"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f4f6f9"
+textColor = "#1a2332"
 font = "sans serif"

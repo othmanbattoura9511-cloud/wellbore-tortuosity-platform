@@ -1,19 +1,19 @@
-"""Modern Plotly styling for drilling engineering charts."""
+"""Plotly styling for drilling engineering charts (light, readable)."""
 
 from __future__ import annotations
 
 import plotly.graph_objects as go
 
 PALETTE = {
-    "bg": "#0f1419",
-    "paper": "#1a2332",
-    "grid": "#2d3a4d",
-    "text": "#e8eef4",
-    "muted": "#8fa3b8",
-    "accent": "#d4a017",
-    "vertical": "#43a047",
-    "curve": "#fb8c00",
-    "lateral": "#1e88e5",
+    "bg": "#f8f9fb",
+    "paper": "#ffffff",
+    "grid": "#dde3ea",
+    "text": "#1a2332",
+    "muted": "#5c6b7a",
+    "accent": "#1565c0",
+    "vertical": "#2e7d32",
+    "curve": "#ef6c00",
+    "lateral": "#1565c0",
 }
 
 CODE_COLORS = {"V": PALETTE["vertical"], "C": PALETTE["curve"], "L": PALETTE["lateral"]}
@@ -31,7 +31,7 @@ PLOTLY_TEMPLATE = go.layout.Template(
         plot_bgcolor=PALETTE["bg"],
         colorway=[PALETTE["vertical"], PALETTE["curve"], PALETTE["lateral"], PALETTE["accent"]],
         hoverlabel=dict(bgcolor=PALETTE["paper"], font_size=12, font_color=PALETTE["text"]),
-        legend=dict(bgcolor="rgba(26,35,50,0.85)", bordercolor=PALETTE["grid"], borderwidth=1),
+        legend=dict(bgcolor="rgba(255,255,255,0.92)", bordercolor=PALETTE["grid"], borderwidth=1),
         xaxis=dict(gridcolor=PALETTE["grid"], zerolinecolor=PALETTE["grid"], title_font=dict(size=12)),
         yaxis=dict(gridcolor=PALETTE["grid"], zerolinecolor=PALETTE["grid"], title_font=dict(size=12)),
         margin=dict(l=48, r=24, t=56, b=48),
@@ -58,12 +58,4 @@ def apply_chart_style(
     if y_title:
         fig.update_yaxes(title_text=y_title)
     fig.update_traces(line=dict(width=2.5), selector=dict(type="scatter"))
-    return fig
-
-
-def hover_engineering(fig):
-    """Ensure common engineering fields appear in hover when present in custom_data."""
-    if fig is None:
-        return None
-    fig.update_layout(hovermode="x unified")
     return fig

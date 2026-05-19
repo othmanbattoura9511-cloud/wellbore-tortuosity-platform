@@ -9,7 +9,7 @@ import streamlit as st
 
 from analytics import AnalyticsResult, comparison_table
 from bha_analytics import incomplete_bha_runs
-from display_labels import BHA_DISPLAY_NAMES, rename_for_display
+from display_labels import show_dataframe
 from plots import WellPlots
 from sections import SECTION_CODES
 from ui_theme import render_kpi_row, render_section_panel, soft_warning
@@ -24,8 +24,9 @@ def _dominant_section(section_mix: dict[str, float]) -> str:
     if not section_mix:
         return "—"
     code = max(section_mix, key=section_mix.get)
+    labels = {"Vertical": "Vertical", "Curve": "Curve / Build", "Lateral": "Lateral"}
     name = next((k for k, v in SECTION_CODES.items() if v == code), code)
-    return f"{code} — {name}"
+    return f"{code} — {labels.get(name, name)}"
 
 
 def build_section_engineering_table(df: pd.DataFrame) -> pd.DataFrame:
@@ -35,7 +36,9 @@ def build_section_engineering_table(df: pd.DataFrame) -> pd.DataFrame:
 
     tort_col = "Tortuosity_Index" if "Tortuosity_Index" in df.columns else "Tortuosity_Index_Local"
     rows: list[dict[str, Any]] = []
+    section_labels = {"Vertical": "Vertical", "Curve": "Curve / Build", "Lateral": "Lateral"}
     for label, code in SECTION_CODES.items():
+        display_label = section_labels.get(label, label)
         block = df[df["Section_Code"] == code]
         if block.empty:
             continue
@@ -46,7 +49,7 @@ def build_section_engineering_table(df: pd.DataFrame) -> pd.DataFrame:
         perf = _mean(block.get("Stability", pd.Series(dtype=float)))
         rows.append(
             {
-                "Section": f"{code} — {label}",
+                "Section": f"{code} — {display_label}",
                 "MD interval (m)": f"{block['MD'].min():.0f} – {block['MD'].max():.0f}",
                 "Stations": len(block),
                 "Avg inclination (°)": _mean(block["Inclination"]),
@@ -142,9 +145,21 @@ def render_overview_tab(
         compact=True,
     )
 
+    st.markdown("##### Trajectory & drilling response")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.plotly_chart(plots.plot_inclination_vs_md(df_filtered), use_container_width=True)
+        tort_fig = plots.plot_tortuosity_vs_md(df_filtered)
+        if tort_fig:
+            st.plotly_chart(tort_fig, use_container_width=True)
+    with c2:
+        st.plotly_chart(plots.plot_dls(df_filtered), use_container_width=True)
+        dist = plots.plot_section_distribution(df_filtered)
+        if dist:
+            st.plotly_chart(dist, use_container_width=True)
 
 def render_section_analysis_tab(df_full: pd.DataFrame, plots: WellPlots) -> None:
-    st.markdown("Engineering analysis by **Vertical (V)**, **Curve (C)**, and **Lateral (L)**.")
+    st.markdown("Engineering analysis by **V Vertical**, **C Curve / Build**, and **L Lateral**.")
     table = build_section_engineering_table(df_full)
     if table.empty:
         st.caption("No classified sections in the current survey.")
@@ -168,7 +183,7 @@ def render_section_analysis_tab(df_full: pd.DataFrame, plots: WellPlots) -> None
         )
 
     st.markdown("##### Section summary table")
-    st.dataframe(table, use_container_width=True, hide_index=True)
+    show_dataframe(table, use_display_names=False)
 
     box = plots.plot_tortuosity_by_section(df_full)
     if box:
@@ -214,17 +229,18 @@ def render_drilling_systems_tab(
             )
 
     st.markdown("##### All BHA runs")
-    st.dataframe(systems, use_container_width=True, hide_index=True)
+    show_dataframe(systems, use_display_names=False)
 
     tl = plots.plot_bha_timeline(result.bha_runs, float(survey["MD"].max()))
     if tl:
         st.plotly_chart(tl, use_container_width=True)
 
     ranked = result.bha_ranking
-    if not ranked.empty and ranked["Rank"].notna().any():
-        st.markdown("##### Performance ranking")
-        st.dataframe(rename_for_display(ranked.sort_values("Rank", na_position="last")), use_container_width=True, hide_index=True)
-        rank_fig = plots.plot_bha_ranking(ranked)
+    ranked_complete = ranked[ranked["Rank"].notna()] if not ranked.empty and "Rank" in ranked.columns else ranked
+    if not ranked_complete.empty:
+        st.markdown("##### Performance ranking (complete MD intervals only)")
+        show_dataframe(ranked_complete.sort_values("Rank", na_position="last"))
+        rank_fig = plots.plot_bha_ranking(ranked_complete)
         if rank_fig:
             st.plotly_chart(rank_fig, use_container_width=True)
 
@@ -247,7 +263,7 @@ def render_survey_data_tab(
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("##### Mapped / merged survey")
-        st.dataframe(rename_for_display(df_mapped.head(500)), use_container_width=True, hide_index=True)
+        show_dataframe(df_mapped, max_rows=500)
         st.download_button(
             "Export mapped CSV",
             df_mapped.to_csv(index=False).encode("utf-8"),
@@ -256,7 +272,7 @@ def render_survey_data_tab(
         )
     with c2:
         st.markdown("##### Processed survey (cleaned + KPIs)")
-        st.dataframe(rename_for_display(df_processed.head(500)), use_container_width=True, hide_index=True)
+        show_dataframe(df_processed, max_rows=500)
         st.download_button(
             "Export processed CSV",
             df_processed.to_csv(index=False).encode("utf-8"),
@@ -286,13 +302,13 @@ def render_comparisons_tab(
         if result.section_comparison.empty:
             st.caption("No section comparison data.")
         else:
-            st.dataframe(result.section_comparison, use_container_width=True, hide_index=True)
+            show_dataframe(result.section_comparison, use_display_names=False)
     with col_r:
         st.markdown("##### Drilling system comparison")
         if result.system_comparison.empty:
             st.caption("No system comparison data.")
         else:
-            st.dataframe(result.system_comparison, use_container_width=True, hide_index=True)
+            show_dataframe(result.system_comparison, use_display_names=False)
             fig = plots.plot_drilling_system_bar(result.system_comparison, "Avg Tortuosity")
             if fig:
                 st.plotly_chart(fig, use_container_width=True)
@@ -317,7 +333,7 @@ def render_comparisons_tab(
         if tbl.empty:
             continue
         with st.expander(title, expanded=title.startswith("Motor") or title.startswith("RSS")):
-            st.dataframe(rename_for_display(tbl.reset_index()), use_container_width=True, hide_index=True)
+            show_dataframe(tbl.reset_index())
 
     st.markdown("---")
     st.markdown("##### Patterns & engineering KPIs")
@@ -349,12 +365,12 @@ def render_comparisons_tab(
     c1, c2 = st.columns(2)
     with c1:
         if not result.rss_steering_comparison.empty:
-            st.dataframe(result.rss_steering_comparison, use_container_width=True, hide_index=True)
+            show_dataframe(result.rss_steering_comparison, use_display_names=False)
         else:
             st.caption("No RSS steering comparison.")
     with c2:
         if not result.hole_size_comparison.empty:
-            st.dataframe(result.hole_size_comparison, use_container_width=True, hide_index=True)
+            show_dataframe(result.hole_size_comparison, use_display_names=False)
         else:
             st.caption("No hole size comparison.")
 

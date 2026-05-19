@@ -131,11 +131,9 @@ with st.sidebar:
 
     st.header("Section filter")
     filt_v = st.checkbox("V — Vertical", True)
-    filt_c = st.checkbox("C — Curve / build", True)
+    filt_c = st.checkbox("C — Curve / Build", True)
     filt_l = st.checkbox("L — Lateral", True)
     section_codes = [c for c, on in zip(["V", "C", "L"], [filt_v, filt_c, filt_l]) if on]
-    show_hp = st.checkbox("Show H&P branding", value=True)
-
     if SAMPLE_SURVEY_CSV.is_file():
         st.caption(f"Sample: `{SAMPLE_SURVEY_CSV.relative_to(PROJECT_ROOT).as_posix()}`")
 
@@ -175,7 +173,7 @@ if df.empty and section_codes:
     st.warning("No stations match the selected section filters.")
     st.stop()
 
-render_header(show_hp_branding=show_hp)
+render_header()
 
 tab_overview, tab_sections, tab_systems, tab_survey, tab_compare = st.tabs(
     [
