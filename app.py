@@ -15,9 +15,19 @@ from column_mapping import (
     suggest_column_index,
 )
 from loaders import SurveyDataLoader
+from display_labels import rename_for_display
 from paths import PROJECT_ROOT, SAMPLE_SURVEY_CSV
 from plots import WellPlots
 from sections import filter_by_section_codes
+from ui_theme import (
+    bha_editor_column_config,
+    inject_theme,
+    prepare_bha_for_editor,
+    prepare_bha_from_editor,
+    render_header,
+    render_wellpath_hero,
+    soft_warning,
+)
 from survey_merge import load_and_merge_surveys
 from survey_quality import SurveyQualityAnalyzer
 from upload_utils import save_uploaded_file, uploaded_file_key
@@ -98,14 +108,11 @@ def _show_table(df: pd.DataFrame, title: str) -> None:
     if df is None or df.empty:
         st.caption("No data available for this view.")
     else:
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(rename_for_display(df), use_container_width=True, hide_index=True)
 
 
 st.set_page_config(page_title="Wellbore Tortuosity Platform", layout="wide", initial_sidebar_state="expanded")
-st.title("Wellbore Tortuosity Analytics Platform")
-st.caption(
-    "Drilling engineering comparison · **V / C / L** sections · Motor vs RSS · multi-BHA · multi-survey"
-)
+inject_theme()
 
 with st.sidebar:
     st.header("Data inputs")
@@ -128,6 +135,7 @@ with st.sidebar:
     filt_c = st.checkbox("C — Curve / build", True)
     filt_l = st.checkbox("L — Lateral", True)
     section_codes = [c for c, on in zip(["V", "C", "L"], [filt_v, filt_c, filt_l]) if on]
+    show_hp = st.checkbox("Show H&P branding", value=True)
 
     if SAMPLE_SURVEY_CSV.is_file():
         st.caption(f"Sample: `{SAMPLE_SURVEY_CSV.relative_to(PROJECT_ROOT).as_posix()}`")
@@ -168,6 +176,8 @@ if df.empty and section_codes:
     st.warning("No stations match the selected section filters.")
     st.stop()
 
+render_header(show_hp_branding=show_hp)
+
 tab_overview, tab_sections, tab_compare, tab_patterns, tab_bha, tab_survey = st.tabs(
     [
         "Overview",
@@ -180,6 +190,7 @@ tab_overview, tab_sections, tab_compare, tab_patterns, tab_bha, tab_survey = st.
 )
 
 with tab_overview:
+    render_wellpath_hero(df_full)
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Stations", len(df_full))
     c2.metric("MD end (m)", f"{quality.get('md_end', df_full['MD'].max()):.0f}")
@@ -199,26 +210,24 @@ with tab_overview:
 with tab_sections:
     st.markdown("Automatic **V / C / L** classification from inclination, DLS, and azimuth.")
     st.json(result.section_summary)
-    st.dataframe(
-        df_full[
-            [
-                c
-                for c in [
-                    "MD",
-                    "Inclination",
-                    "Azimuth",
-                    "DLS",
-                    "Build_Rate",
-                    "Turn_Rate",
-                    "Well_Section",
-                    "Section_Code",
-                    "Section_Confidence",
-                ]
-                if c in df_full.columns
-            ]
-        ].head(250),
-        use_container_width=True,
-    )
+    sec_cols = [
+        c
+        for c in [
+            "MD",
+            "MD_In",
+            "MD_Out",
+            "Inclination",
+            "Azimuth",
+            "DLS",
+            "Build_Rate",
+            "Turn_Rate",
+            "Well_Section",
+            "Section_Code",
+            "Section_Confidence",
+        ]
+        if c in df_full.columns
+    ]
+    st.dataframe(rename_for_display(df_full[sec_cols].head(250)), use_container_width=True)
     box = plots.plot_tortuosity_by_section(df)
     if box:
         st.plotly_chart(box, use_container_width=True)
@@ -261,26 +270,27 @@ with tab_bha:
     if not bha_intervals.empty:
         for _, row in incomplete_bha_runs(bha_intervals).iterrows():
             label = row.get("BHA_Run", row.get("Source_File", "BHA"))
-            st.warning(f"Please enter **MD_In** and **MD_Out** to map **{label}** to the survey.")
+            soft_warning(f"Please enter <b>MD In</b> and <b>MD Out</b> to map <b>{label}</b> to the survey.")
 
-    with st.expander("Edit BHA runs & MD intervals", expanded=not bha_intervals.empty):
-        if "bha_intervals_raw" in st.session_state and not st.session_state["bha_intervals_raw"].empty:
-            edited = st.data_editor(
-                st.session_state["bha_intervals_raw"][
-                    [c for c in BHA_COLUMNS if c in st.session_state["bha_intervals_raw"].columns]
-                ],
-                use_container_width=True,
-                num_rows="dynamic",
-            )
-            if st.button("Apply BHA MD mapping", type="primary"):
-                st.session_state["bha_intervals"] = normalize_bha_intervals(edited)
-                st.rerun()
-        else:
-            st.caption("Upload BHA PDFs in the sidebar.")
+    st.subheader("BHA runs — edit MD intervals")
+    if "bha_intervals_raw" in st.session_state and not st.session_state["bha_intervals_raw"].empty:
+        editor_df = prepare_bha_for_editor(st.session_state["bha_intervals_raw"])
+        edited = st.data_editor(
+            editor_df,
+            use_container_width=True,
+            num_rows="dynamic",
+            column_config=bha_editor_column_config(),
+            key="bha_intervals_editor",
+        )
+        if st.button("Apply BHA MD mapping", type="primary"):
+            st.session_state["bha_intervals"] = normalize_bha_intervals(prepare_bha_from_editor(edited))
+            st.rerun()
+    else:
+        st.caption("Upload BHA PDFs in the sidebar.")
 
     if not result.bha_runs.empty:
         st.subheader("BHA runs")
-        st.dataframe(result.bha_runs, use_container_width=True, hide_index=True)
+        st.dataframe(rename_for_display(result.bha_runs), use_container_width=True, hide_index=True)
 
         tl = plots.plot_bha_timeline(result.bha_runs, float(df_full["MD"].max()))
         if tl:
@@ -331,4 +341,4 @@ with tab_bha:
 
 with tab_survey:
     st.write(quality)
-    st.dataframe(df_full, use_container_width=True)
+    st.dataframe(rename_for_display(df_full), use_container_width=True)

@@ -324,17 +324,21 @@ def _resolve_md_start_end_columns(df: pd.DataFrame) -> Tuple[Optional[str], Opti
 
 
 def expand_interval_survey(df: pd.DataFrame) -> pd.DataFrame:
-    """Convert MD Start / MD End interval exports to a station MD column."""
+    """Map MD Start/End to MD_In/MD_Out and compute station MD (midpoint)."""
     out = df.copy()
     start_col, end_col = _resolve_md_start_end_columns(out)
     if start_col and end_col:
         start = pd.to_numeric(out[start_col], errors="coerce")
         end = pd.to_numeric(out[end_col], errors="coerce")
+        out["MD_In"] = start
+        out["MD_Out"] = end
         out["MD"] = ((start + end) / 2.0).where(start.notna() & end.notna(), end.fillna(start))
     elif end_col:
-        out["MD"] = pd.to_numeric(out[end_col], errors="coerce")
+        out["MD_Out"] = pd.to_numeric(out[end_col], errors="coerce")
+        out["MD"] = out["MD_Out"]
     elif start_col:
-        out["MD"] = pd.to_numeric(out[start_col], errors="coerce")
+        out["MD_In"] = pd.to_numeric(out[start_col], errors="coerce")
+        out["MD"] = out["MD_In"]
     return out
 
 
@@ -345,7 +349,7 @@ def file_type_user_message(file_type: SurveyFileType, columns: Iterable[object])
     if file_type == SurveyFileType.INTERVAL_SUMMARY:
         return (
             "Detected an **interval survey export** (MD Start / MD End). "
-            "MD will be computed as the interval midpoint."
+            "Mapped to **MD In** / **MD Out**; station MD uses the interval midpoint."
         )
     if file_type == SurveyFileType.BHA_TABLE:
         return (
