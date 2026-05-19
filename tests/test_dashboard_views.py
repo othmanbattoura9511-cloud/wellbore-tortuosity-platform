@@ -17,9 +17,13 @@ def test_section_engineering_table_vcl():
             "Hole_Size": ["8.5 in", "8.5 in", "6.75 in", "6.75 in"],
         }
     )
-    table = build_section_engineering_table(df)
+    table = build_section_engineering_table(df, ["V", "C", "L"])
     assert len(table) == 3
     assert "V — Vertical" in table["Section"].values
+
+    only_l = build_section_engineering_table(df, ["L"])
+    assert len(only_l) == 1
+    assert only_l.iloc[0]["Section"] == "L — Lateral"
 
 
 def test_drilling_systems_table_from_bha_runs():

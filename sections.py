@@ -12,6 +12,8 @@ import pandas as pd
 
 SECTION_LABELS = ("Vertical", "Curve", "Lateral")
 SECTION_CODES = {"Vertical": "V", "Curve": "C", "Lateral": "L"}
+CODE_TO_LABEL = {"V": "Vertical", "C": "Curve", "L": "Lateral"}
+LABEL_TO_CODE = {label: code for code, label in CODE_TO_LABEL.items()}
 SECTION_ORDER = list(SECTION_LABELS)
 
 
@@ -212,10 +214,20 @@ class WellSectionClassifier:
 
 
 def filter_by_section_codes(df: pd.DataFrame, codes: List[str]) -> pd.DataFrame:
-    """Filter survey rows by V / C / L codes (empty list returns no rows)."""
-    if "Section_Code" not in df.columns:
-        return df
+    """Filter survey rows by V / C / L codes mapped to Vertical / Curve / Lateral."""
+    if df is None or df.empty:
+        return df.copy() if df is not None else pd.DataFrame()
     if not codes:
         return df.iloc[0:0].copy()
-    allowed = {c.upper() for c in codes}
-    return df[df["Section_Code"].str.upper().isin(allowed)].copy()
+
+    allowed_codes = {str(c).upper() for c in codes}
+    allowed_labels = {CODE_TO_LABEL[c] for c in allowed_codes if c in CODE_TO_LABEL}
+
+    mask = pd.Series(False, index=df.index)
+    if "Section_Code" in df.columns:
+        mask = mask | df["Section_Code"].astype(str).str.upper().isin(allowed_codes)
+    if "Well_Section" in df.columns:
+        mask = mask | df["Well_Section"].isin(allowed_labels)
+    if not mask.any() and "Section_Code" not in df.columns and "Well_Section" not in df.columns:
+        return df.copy()
+    return df.loc[mask].copy()

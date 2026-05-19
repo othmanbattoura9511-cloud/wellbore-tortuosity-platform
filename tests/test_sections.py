@@ -58,6 +58,11 @@ def test_section_filter():
     assert (only_v["Section_Code"] == "V").all()
     assert len(only_v) < len(out)
 
+    only_l = filter_by_section_codes(out, ["L"])
+    if not only_l.empty:
+        assert set(only_l["Well_Section"].unique()) <= {"Lateral"}
+        assert (only_l["Section_Code"] == "L").all()
+
 
 def test_section_confidence_column_present():
     md = np.arange(0, 1000, 25, dtype=float)

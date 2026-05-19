@@ -112,7 +112,7 @@ def render_section_panel(title: str, fields: list[tuple[str, object]], accent: s
     st.markdown(html, unsafe_allow_html=True)
 
 
-def render_wellpath_hero(df: pd.DataFrame) -> None:
+def render_wellpath_hero(df: pd.DataFrame, chart_key: str = "overview_wellpath") -> None:
     if df.empty or "MD" not in df.columns or "Inclination" not in df.columns:
         return
     work = df.sort_values("MD")
@@ -136,7 +136,7 @@ def render_wellpath_hero(df: pd.DataFrame) -> None:
     apply_chart_style(fig, "Well trajectory (inclination vs MD)", "MD (m)", "Inclination (deg)", rangeslider=False)
     fig.update_xaxes(title_text="Inclination (deg)")
     fig.update_yaxes(title_text="MD (m)")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key=chart_key)
 
 
 def bha_editor_column_config() -> dict:
