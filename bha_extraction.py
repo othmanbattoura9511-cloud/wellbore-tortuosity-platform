@@ -78,6 +78,19 @@ def _classify_drilling_system(text_upper: str) -> str:
     return "Unknown"
 
 
+def _normalize_hole_size(value: Optional[str]) -> str:
+    if value is None:
+        return "Unknown"
+    text = str(value).strip()
+    if not text:
+        return "Unknown"
+    if re.fullmatch(r"(in|inch|inches|mm|cm|m|ft|feet|)?", text, re.I):
+        return "Unknown"
+    if not re.search(r"\d", text):
+        return "Unknown"
+    return text[:80]
+
+
 def _classify_rss_type(text_upper: str, drilling_system: str) -> str:
     if drilling_system != "RSS":
         return "Unknown RSS Type"
@@ -123,7 +136,7 @@ def extract_bha_from_text(text: str, source_file: str = "", run_index: int = 1) 
         "MD_Out": md_out,
         "Drilling_System": system,
         "RSS_Type": _classify_rss_type(text_upper, system),
-        "Hole_Size": hole or "Unknown",
+        "Hole_Size": _normalize_hole_size(hole),
         "Bit_Type": bit_type or "Unknown",
         "BHA_Config": (config or "Unknown")[:200],
     }
@@ -162,7 +175,8 @@ def normalize_bha_intervals(df: pd.DataFrame) -> pd.DataFrame:
             out[col] = None
     out["MD_In"] = pd.to_numeric(out["MD_In"], errors="coerce")
     out["MD_Out"] = pd.to_numeric(out["MD_Out"], errors="coerce")
-    for col in ("Drilling_System", "RSS_Type", "Hole_Size", "Bit_Type", "BHA_Config"):
+    for col in ("Drilling_System", "RSS_Type", "Bit_Type", "BHA_Config"):
         out[col] = out[col].fillna("Unknown").replace("", "Unknown")
+    out["Hole_Size"] = out["Hole_Size"].apply(_normalize_hole_size)
     out["BHA"] = out.get("BHA", out["BHA_Run"]).fillna(out["BHA_Run"])
     return out

@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from analytics import run_analytics_pipeline
+from bha_analytics import build_bha_runs_table, incomplete_bha_runs, rank_bha_performance
 from bha_extraction import BHA_COLUMNS, extract_bha_runs_from_uploads, normalize_bha_intervals
 from column_mapping import (
     SurveyFileType,
@@ -160,6 +161,11 @@ if "bha_intervals_raw" in st.session_state and not st.session_state["bha_interva
 else:
     bha_intervals = st.session_state.get("bha_intervals", pd.DataFrame())
 
+if not bha_intervals.empty:
+    for _, row in incomplete_bha_runs(bha_intervals).iterrows():
+        label = row.get("BHA_Run", row.get("Source_File", "BHA"))
+        st.warning(f"Please enter MD_In and MD_Out to map **{label}** to the survey.")
+
 # --- Analytics ---
 result = run_analytics_pipeline(df_survey, bha_intervals if not bha_intervals.empty else None)
 df_full = result.survey
@@ -207,6 +213,18 @@ else:
     st.caption("Map BHA PDFs with drilling system labels to enable system comparison.")
 
 # --- Supplementary comparisons (compact) ---
+if not bha_intervals.empty:
+    bha_runs = build_bha_runs_table(df_full, bha_intervals)
+    bha_ranking = rank_bha_performance(bha_runs)
+    ranked_complete = bha_ranking[bha_ranking["Interval_Complete"].astype(bool)] if not bha_ranking.empty else bha_ranking
+    if not ranked_complete.empty and ranked_complete["Rank"].notna().any():
+        with st.expander("BHA performance ranking (complete intervals only)"):
+            st.dataframe(
+                ranked_complete.sort_values("Rank"),
+                use_container_width=True,
+                hide_index=True,
+            )
+
 with st.expander("RSS push-the-bit vs point-the-bit · Hole size"):
     col_a, col_b = st.columns(2)
     with col_a:
