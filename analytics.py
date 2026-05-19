@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from bha_analytics import build_bha_runs_table, rank_bha_performance
+from bha_extraction import normalize_bha_intervals
 from pattern_recognition import PatternRecognitionEngine
 from preprocess import SurveyPreprocessor
 from rss_analysis import RSSSteeringAnalyzer
@@ -20,12 +22,15 @@ class AnalyticsResult:
     section_summary: Dict[str, Any]
     pattern_summary: Dict[str, Any]
     rss_summary: Dict[str, Any]
+    bha_runs: pd.DataFrame = field(default_factory=pd.DataFrame)
+    bha_ranking: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def ensure_metadata_columns(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     defaults = {
         "BHA": "Unknown",
+        "BHA_Run": "Unknown",
         "Drilling_System": "Unknown",
         "Hole_Size": "Unknown",
         "Bit_Type": "Unknown",
@@ -41,20 +46,29 @@ def ensure_metadata_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def apply_bha_intervals(df: pd.DataFrame, bha_intervals: Optional[pd.DataFrame]) -> pd.DataFrame:
-    """Map BHA / drilling metadata from extracted PDF intervals by MD."""
+    """Map BHA / drilling metadata from PDF intervals onto survey stations by MD."""
     out = ensure_metadata_columns(df)
-    if bha_intervals is None or bha_intervals.empty:
+    intervals = normalize_bha_intervals(bha_intervals) if bha_intervals is not None else pd.DataFrame()
+    if intervals.empty:
         return out
 
-    for _, row in bha_intervals.iterrows():
+    for _, row in intervals.iterrows():
         md_in = row.get("MD_In")
         md_out = row.get("MD_Out")
         if pd.isna(md_in) or pd.isna(md_out):
             continue
         mask = (out["MD"] >= float(md_in)) & (out["MD"] <= float(md_out))
-        for col in ("BHA", "Drilling_System", "Hole_Size", "Bit_Type", "RSS_Type"):
-            if col in row.index and pd.notna(row.get(col)):
-                out.loc[mask, col] = row[col]
+        mapping = {
+            "BHA": row.get("BHA", row.get("BHA_Run")),
+            "BHA_Run": row.get("BHA_Run"),
+            "Drilling_System": row.get("Drilling_System"),
+            "Hole_Size": row.get("Hole_Size"),
+            "Bit_Type": row.get("Bit_Type"),
+            "RSS_Type": row.get("RSS_Type"),
+        }
+        for col, val in mapping.items():
+            if pd.notna(val):
+                out.loc[mask, col] = val
     return out
 
 
@@ -77,13 +91,19 @@ def run_analytics_pipeline(df: pd.DataFrame, bha_intervals: Optional[pd.DataFram
     rss_result = RSSSteeringAnalyzer().analyze(work)
     work = rss_result.survey
 
-    work = apply_bha_intervals(work, bha_intervals)
+    intervals = normalize_bha_intervals(bha_intervals)
+    work = apply_bha_intervals(work, intervals)
+
+    bha_runs = build_bha_runs_table(work, intervals)
+    bha_ranking = rank_bha_performance(bha_runs) if not bha_runs.empty else pd.DataFrame()
 
     return AnalyticsResult(
         survey=work,
         section_summary=section_result.summary,
         pattern_summary=pattern_result.summary,
         rss_summary=rss_result.summary,
+        bha_runs=bha_runs,
+        bha_ranking=bha_ranking,
     )
 
 
@@ -93,6 +113,8 @@ def comparison_table(df: pd.DataFrame, group_cols: List[str], value_cols: Option
         "Tortuosity_Index_Local",
         "Build_Rate",
         "Section_Confidence",
+        "RSS_Severity",
+        "Steering_Stability",
     ]
     present = [c for c in value_cols if c in df.columns]
     if not present:

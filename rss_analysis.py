@@ -45,6 +45,14 @@ class RSSSteeringAnalyzer:
         )
         work["RSS_Type"] = rss_type
         work["RSS_Confidence"] = (np.maximum(push_score, point_score) / (push_score + point_score + 1e-6)).clip(0, 1)
+        work["RSS_Severity"] = (
+            (dls / (dls.quantile(0.9) + 1e-6)).clip(0, 2) * 0.5
+            + pattern.isin(["Micro-tortuosity", "Chaotic", "Helical"]).astype(float) * 0.5
+        ).clip(0, 1)
+        turn = work.get("Turn_Rate", pd.Series(0, index=work.index)).abs()
+        work["Steering_Stability"] = (
+            1.0 - (turn / (turn.quantile(0.9) + 1e-6)).clip(0, 2)
+        ).clip(0, 1)
 
         summary = {
             "rss_counts": pd.Series(rss_type).value_counts().to_dict(),

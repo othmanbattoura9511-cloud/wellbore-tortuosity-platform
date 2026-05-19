@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 
 from column_mapping import standardize_survey_columns
-from sections import SECTION_LABELS, WellSectionClassifier
+from sections import SECTION_CODES, SECTION_LABELS, WellSectionClassifier, filter_by_section_codes
 
 
 def _classify(md, inc, azi=None):
@@ -13,8 +13,7 @@ def _classify(md, inc, azi=None):
 
 
 def _forbidden_sections(series: pd.Series) -> set:
-    forbidden = {"Transition", "Tangent", "Curve"}
-    return forbidden & set(series.unique())
+    return {"Build", "Drop", "Tangent", "Transition", "Horizontal / Lateral"} & set(series.unique())
 
 
 def test_vertical_only_well():
@@ -22,20 +21,19 @@ def test_vertical_only_well():
     inc = np.linspace(0, 8, len(md))
     out = _classify(md, inc)
     assert (out["Well_Section"] == "Vertical").mean() > 0.5
-    assert out["Section_Confidence"].mean() > 0.2
+    assert (out["Section_Code"] == "V").mean() > 0.5
     assert not _forbidden_sections(out["Well_Section"])
 
 
-def test_horizontal_lateral_section():
+def test_lateral_section():
     md = np.arange(0, 3000, 30, dtype=float)
     inc = np.concatenate([np.linspace(0, 85, 40), np.full(len(md) - 40, 88.0)])
     out = _classify(md, inc)
-    lateral = (out["Well_Section"] == "Horizontal / Lateral").mean()
-    assert lateral > 0.25
-    assert not _forbidden_sections(out["Well_Section"])
+    assert (out["Well_Section"] == "Lateral").mean() > 0.25
+    assert "L" in out["Section_Code"].values
 
 
-def test_build_section_present():
+def test_curve_section_present():
     md = np.arange(0, 4000, 30, dtype=float)
     inc = np.piecewise(
         md,
@@ -43,31 +41,22 @@ def test_build_section_present():
         [lambda x: x * 0.01, lambda x: 5 + (x - 800) * 0.04, lambda x: 88.0],
     ).astype(float)
     out = _classify(md, inc)
-    assert "Build" in out["Well_Section"].values
-    assert not _forbidden_sections(out["Well_Section"])
+    assert "Curve" in out["Well_Section"].values
+    assert "C" in out["Section_Code"].values
 
 
-def test_drop_section_present():
-    md = np.arange(0, 3000, 30, dtype=float)
-    inc = np.concatenate(
-        [
-            np.linspace(0, 60, 40),
-            np.linspace(60, 25, 30),
-            np.full(len(md) - 70, 25.0),
-        ]
-    )
+def test_section_labels_vcl():
+    assert set(SECTION_LABELS) == {"Vertical", "Curve", "Lateral"}
+    assert SECTION_CODES == {"Vertical": "V", "Curve": "C", "Lateral": "L"}
+
+
+def test_section_filter():
+    md = np.arange(0, 900, 30, dtype=float)
+    inc = np.piecewise(md, [md < 300, md >= 300], [0, 80.0]).astype(float)
     out = _classify(md, inc)
-    assert "Drop" in out["Well_Section"].values
-    assert not _forbidden_sections(out["Well_Section"])
-
-
-def test_section_labels_enum():
-    assert set(SECTION_LABELS) == {
-        "Vertical",
-        "Build",
-        "Drop",
-        "Horizontal / Lateral",
-    }
+    only_v = filter_by_section_codes(out, ["V"])
+    assert (only_v["Section_Code"] == "V").all()
+    assert len(only_v) < len(out)
 
 
 def test_section_confidence_column_present():

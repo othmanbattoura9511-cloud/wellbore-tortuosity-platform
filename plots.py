@@ -6,10 +6,8 @@ from sections import SECTION_ORDER
 
 SECTION_COLORS = {
     "Vertical": "#2e7d32",
-    "Build": "#ef6c00",
-    "Drop": "#c62828",
-    "Horizontal / Lateral": "#1565c0",
-    "Horizontal": "#1565c0",
+    "Curve": "#fb8c00",
+    "Lateral": "#1565c0",
 }
 
 PATTERN_COLORS = {
@@ -58,7 +56,7 @@ class WellPlots:
             y="count",
             color="Well_Section",
             color_discrete_map=color_map,
-            title="Well section distribution",
+            title="Well section distribution (V / C / L)",
             category_orders={"Well_Section": list(color_map.keys())},
         )
 
@@ -98,3 +96,46 @@ class WellPlots:
         counts = df["RSS_Type"].value_counts().reset_index()
         counts.columns = ["RSS_Type", "count"]
         return px.pie(counts, names="RSS_Type", values="count", title="RSS type distribution")
+
+    def plot_bha_timeline(self, bha_runs: pd.DataFrame, md_max: float) -> object | None:
+        if bha_runs is None or bha_runs.empty:
+            return None
+        rows = []
+        for _, r in bha_runs.iterrows():
+            if pd.isna(r.get("MD_In")) or pd.isna(r.get("MD_Out")):
+                continue
+            md_in = float(r["MD_In"])
+            md_out = float(r["MD_Out"])
+            rows.append(
+                {
+                    "BHA_Run": r.get("BHA_Run", r.get("BHA")),
+                    "MD_In": md_in,
+                    "Length": md_out - md_in,
+                    "Drilling_System": r.get("Drilling_System", "Unknown"),
+                }
+            )
+        if not rows:
+            return None
+        tl = pd.DataFrame(rows)
+        fig = px.bar(
+            tl,
+            x="Length",
+            y="BHA_Run",
+            base="MD_In",
+            orientation="h",
+            color="Drilling_System",
+            title="BHA run timeline (MD intervals)",
+        )
+        fig.update_xaxes(range=[0, md_max])
+        return fig
+
+    def plot_bha_ranking(self, ranking: pd.DataFrame) -> object | None:
+        if ranking is None or ranking.empty or "Performance_Score" not in ranking.columns:
+            return None
+        return px.bar(
+            ranking,
+            x="BHA_Run",
+            y="Performance_Score",
+            color="Drilling_System",
+            title="BHA performance ranking (lower score = better)",
+        )
