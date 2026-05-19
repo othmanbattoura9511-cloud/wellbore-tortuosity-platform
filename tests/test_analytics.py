@@ -16,10 +16,13 @@ def test_pipeline_runs_on_synthetic_well():
     survey = result.survey
     for col in (
         "Well_Section",
+        "Section_Code",
         "Section_Confidence",
-        "Trajectory_Severity",
-        "Primary_Concern",
-        "RSS_Type",
+        "Tortuosity_Index",
+        "Stability",
+        "Wellbore_Smoothness",
         "DLS",
     ):
         assert col in survey.columns
+    assert not result.section_comparison.empty
+    assert set(survey["Section_Code"].unique()).issubset({"V", "C", "L"})

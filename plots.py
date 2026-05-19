@@ -10,160 +10,31 @@ SECTION_COLORS = {
     "Lateral": "#1565c0",
 }
 
-from pattern_recognition import SEVERITY_ORDER, severity_color
-
-SEVERITY_COLORS = {s: severity_color(s) for s in SEVERITY_ORDER}
-
-
-def _section_color_map(df: pd.DataFrame) -> dict:
-    present = [s for s in SECTION_ORDER if s in df.get("Well_Section", pd.Series(dtype=str)).unique()]
-    legacy = [s for s in df["Well_Section"].unique() if s not in present]
-    ordered = present + list(legacy)
-    return {s: SECTION_COLORS.get(s, "#757575") for s in ordered}
-
 
 class WellPlots:
-    def plot_dls(self, df, md_col="MD", dls_col="DLS", color_col=None):
-        return px.line(df, x=md_col, y=dls_col, color=color_col, title="DLS vs Measured Depth")
+    """Minimal engineering charts for the comparison dashboard."""
 
-    def plot_inclination(self, df, md_col="MD", inc_col="Inclination", color_col=None):
-        return px.line(df, x=md_col, y=inc_col, color=color_col, title="Inclination vs Measured Depth")
-
-    def plot_azimuth(self, df, md_col="MD", azi_col="Azimuth", color_col=None):
-        return px.line(df, x=md_col, y=azi_col, color=color_col, title="Azimuth vs Measured Depth")
-
-    def plot_tortuosity_map(self, df, x_col="Local_North", y_col="Local_East", color_col="Tortuosity_Index_Local"):
-        if x_col in df.columns and y_col in df.columns:
-            return px.scatter(df, x=x_col, y=y_col, color=color_col, title="Tortuosity Map")
-        return px.scatter(df, x="MD", y=color_col, color=color_col, title="Tortuosity Index vs MD")
-
-    def plot_section_distribution(self, df):
-        if "Well_Section" not in df.columns:
-            return None
-        counts = df["Well_Section"].value_counts().reset_index()
-        counts.columns = ["Well_Section", "count"]
-        color_map = _section_color_map(df)
-        counts["Well_Section"] = pd.Categorical(
-            counts["Well_Section"], categories=list(color_map.keys()), ordered=True
-        )
-        return px.bar(
-            counts,
-            x="Well_Section",
-            y="count",
-            color="Well_Section",
-            color_discrete_map=color_map,
-            title="Well section distribution (V / C / L)",
-            category_orders={"Well_Section": list(color_map.keys())},
-        )
-
-    def plot_severity_by_section(self, df):
-        if "Trajectory_Severity" not in df.columns or "Well_Section" not in df.columns:
-            return None
-        cross = df.groupby(["Well_Section", "Trajectory_Severity"], observed=False).size().reset_index(name="count")
-        color_map = _section_color_map(df)
-        return px.bar(
-            cross,
-            x="Well_Section",
-            y="count",
-            color="Trajectory_Severity",
-            color_discrete_map=SEVERITY_COLORS,
-            title="Trajectory severity by well section (V / C / L)",
-            barmode="group",
-            category_orders={
-                "Well_Section": list(color_map.keys()),
-                "Trajectory_Severity": SEVERITY_ORDER,
-            },
-        )
-
-    def plot_severity_along_md(self, df):
-        if "Trajectory_Severity" not in df.columns:
-            return None
-        work = df.copy()
-        work["Severity_Rank"] = work["Trajectory_Severity"].map(
-            {s: i for i, s in enumerate(SEVERITY_ORDER)}
-        )
-        return px.scatter(
-            work,
+    def plot_inclination_vs_md(self, df: pd.DataFrame, color_col: str = "Section_Code") -> object:
+        return px.line(
+            df,
             x="MD",
-            y="Composite_Risk",
-            color="Trajectory_Severity",
-            hover_data=["Primary_Concern", "Mean_DLS_Local", "Oscillation_Score"],
-            color_discrete_map=SEVERITY_COLORS,
-            title="Composite drilling risk vs measured depth",
+            y="Inclination",
+            color=color_col,
+            title="Inclination vs measured depth",
+            labels={"MD": "MD (m)", "Inclination": "Inclination (°)", "Section_Code": "Section"},
+            color_discrete_map={"V": SECTION_COLORS["Vertical"], "C": SECTION_COLORS["Curve"], "L": SECTION_COLORS["Lateral"]},
         )
 
-    def plot_kpi_timeline(self, df, kpi_col: str = "Oscillation_Score"):
-        if kpi_col not in df.columns:
+    def plot_tortuosity_vs_md(self, df: pd.DataFrame) -> object | None:
+        col = "Tortuosity_Index" if "Tortuosity_Index" in df.columns else "Tortuosity_Index_Local"
+        if col not in df.columns:
             return None
         return px.line(
             df,
             x="MD",
-            y=kpi_col,
-            color="Trajectory_Severity",
-            color_discrete_map=SEVERITY_COLORS,
-            title=f"{kpi_col.replace('_', ' ')} vs MD",
-        )
-
-    def plot_tortuosity_by_section(self, df):
-        if "Well_Section" not in df.columns or "Tortuosity_Index_Local" not in df.columns:
-            return None
-        color_map = _section_color_map(df)
-        return px.box(
-            df,
-            x="Well_Section",
-            y="Tortuosity_Index_Local",
-            color="Well_Section",
-            color_discrete_map=color_map,
-            title="Tortuosity by well section",
-            category_orders={"Well_Section": list(color_map.keys())},
-        )
-
-    def plot_rss_distribution(self, df):
-        if "RSS_Type" not in df.columns:
-            return None
-        counts = df["RSS_Type"].value_counts().reset_index()
-        counts.columns = ["RSS_Type", "count"]
-        return px.pie(counts, names="RSS_Type", values="count", title="RSS type distribution")
-
-    def plot_bha_timeline(self, bha_runs: pd.DataFrame, md_max: float) -> object | None:
-        if bha_runs is None or bha_runs.empty:
-            return None
-        rows = []
-        for _, r in bha_runs.iterrows():
-            if pd.isna(r.get("MD_In")) or pd.isna(r.get("MD_Out")):
-                continue
-            md_in = float(r["MD_In"])
-            md_out = float(r["MD_Out"])
-            rows.append(
-                {
-                    "BHA_Run": r.get("BHA_Run", r.get("BHA")),
-                    "MD_In": md_in,
-                    "Length": md_out - md_in,
-                    "Drilling_System": r.get("Drilling_System", "Unknown"),
-                }
-            )
-        if not rows:
-            return None
-        tl = pd.DataFrame(rows)
-        fig = px.bar(
-            tl,
-            x="Length",
-            y="BHA_Run",
-            base="MD_In",
-            orientation="h",
-            color="Drilling_System",
-            title="BHA run timeline (MD intervals)",
-        )
-        fig.update_xaxes(range=[0, md_max])
-        return fig
-
-    def plot_bha_ranking(self, ranking: pd.DataFrame) -> object | None:
-        if ranking is None or ranking.empty or "Performance_Score" not in ranking.columns:
-            return None
-        return px.bar(
-            ranking,
-            x="BHA_Run",
-            y="Performance_Score",
-            color="Drilling_System",
-            title="BHA performance ranking (lower score = better)",
+            y=col,
+            color="Section_Code",
+            title="Tortuosity index vs measured depth",
+            labels={"MD": "MD (m)", col: "Tortuosity index", "Section_Code": "Section"},
+            color_discrete_map={"V": SECTION_COLORS["Vertical"], "C": SECTION_COLORS["Curve"], "L": SECTION_COLORS["Lateral"]},
         )

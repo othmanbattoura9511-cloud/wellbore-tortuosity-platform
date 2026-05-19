@@ -1,15 +1,20 @@
-"""End-to-end survey analytics pipeline (well-agnostic)."""
+"""Drilling engineering analytics pipeline."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import pandas as pd
 
-from bha_analytics import build_bha_runs_table, rank_bha_performance
 from bha_extraction import normalize_bha_intervals
-from pattern_recognition import PatternRecognitionEngine
+from comparison_tables import (
+    build_drilling_system_comparison_table,
+    build_hole_size_comparison,
+    build_rss_steering_comparison,
+    build_section_comparison_table,
+)
+from engineering_kpis import EngineeringKpiEngine
 from preprocess import SurveyPreprocessor
 from rss_analysis import RSSSteeringAnalyzer
 from sections import WellSectionClassifier
@@ -20,21 +25,21 @@ from tortuosity import TortuosityAnalyzer
 class AnalyticsResult:
     survey: pd.DataFrame
     section_summary: Dict[str, Any]
-    pattern_summary: Dict[str, Any]
-    rss_summary: Dict[str, Any]
-    bha_runs: pd.DataFrame = field(default_factory=pd.DataFrame)
-    bha_ranking: pd.DataFrame = field(default_factory=pd.DataFrame)
+    kpi_summary: Dict[str, Any]
+    section_comparison: pd.DataFrame = field(default_factory=pd.DataFrame)
+    system_comparison: pd.DataFrame = field(default_factory=pd.DataFrame)
+    rss_steering_comparison: pd.DataFrame = field(default_factory=pd.DataFrame)
+    hole_size_comparison: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def ensure_metadata_columns(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     defaults = {
-        "BHA": "Unknown",
-        "BHA_Run": "Unknown",
+        "BHA": "Not mapped",
+        "BHA_Run": "Not mapped",
         "Drilling_System": "Unknown",
         "Hole_Size": "Unknown",
         "Bit_Type": "Unknown",
-        "Survey_Type": "Unknown",
         "RSS_Type": "Unknown RSS Type",
     }
     for col, default in defaults.items():
@@ -46,7 +51,6 @@ def ensure_metadata_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def apply_bha_intervals(df: pd.DataFrame, bha_intervals: Optional[pd.DataFrame]) -> pd.DataFrame:
-    """Map BHA / drilling metadata from PDF intervals onto survey stations by MD."""
     out = ensure_metadata_columns(df)
     intervals = normalize_bha_intervals(bha_intervals) if bha_intervals is not None else pd.DataFrame()
     if intervals.empty:
@@ -58,15 +62,15 @@ def apply_bha_intervals(df: pd.DataFrame, bha_intervals: Optional[pd.DataFrame])
         if pd.isna(md_in) or pd.isna(md_out):
             continue
         mask = (out["MD"] >= float(md_in)) & (out["MD"] <= float(md_out))
-        mapping = {
-            "BHA": row.get("BHA", row.get("BHA_Run")),
-            "BHA_Run": row.get("BHA_Run"),
-            "Drilling_System": row.get("Drilling_System"),
-            "Hole_Size": row.get("Hole_Size"),
-            "Bit_Type": row.get("Bit_Type"),
-            "RSS_Type": row.get("RSS_Type"),
-        }
-        for col, val in mapping.items():
+        for col, key in (
+            ("BHA", "BHA"),
+            ("BHA_Run", "BHA_Run"),
+            ("Drilling_System", "Drilling_System"),
+            ("Hole_Size", "Hole_Size"),
+            ("Bit_Type", "Bit_Type"),
+            ("RSS_Type", "RSS_Type"),
+        ):
+            val = row.get(key, row.get("BHA_Run"))
             if pd.notna(val):
                 out.loc[mask, col] = val
     return out
@@ -85,42 +89,22 @@ def run_analytics_pipeline(df: pd.DataFrame, bha_intervals: Optional[pd.DataFram
     section_result = WellSectionClassifier().classify_with_confidence(work)
     work = section_result.survey
 
-    pattern_result = PatternRecognitionEngine().detect_patterns(work)
-    work = pattern_result.survey
-    pattern_summary = pattern_result.summary
+    kpi_result = EngineeringKpiEngine().compute(work)
+    work = kpi_result.survey
 
-    rss_result = RSSSteeringAnalyzer().analyze(work)
-    work = rss_result.survey
+    work = RSSSteeringAnalyzer().analyze(work).survey
+    work = apply_bha_intervals(work, bha_intervals)
 
     intervals = normalize_bha_intervals(bha_intervals)
-    work = apply_bha_intervals(work, intervals)
-
-    bha_runs = build_bha_runs_table(work, intervals)
-    bha_ranking = rank_bha_performance(bha_runs) if not bha_runs.empty else pd.DataFrame()
+    section_table = build_section_comparison_table(work, intervals)
+    system_table = build_drilling_system_comparison_table(section_table)
 
     return AnalyticsResult(
         survey=work,
         section_summary=section_result.summary,
-        pattern_summary=pattern_summary,
-        rss_summary=rss_result.summary,
-        bha_runs=bha_runs,
-        bha_ranking=bha_ranking,
+        kpi_summary=kpi_result.summary,
+        section_comparison=section_table,
+        system_comparison=system_table,
+        rss_steering_comparison=build_rss_steering_comparison(section_table),
+        hole_size_comparison=build_hole_size_comparison(section_table),
     )
-
-
-def comparison_table(df: pd.DataFrame, group_cols: List[str], value_cols: Optional[List[str]] = None) -> pd.DataFrame:
-    value_cols = value_cols or [
-        "DLS",
-        "Tortuosity_Index",
-        "Mean_DLS_Local",
-        "Oscillation_Score",
-        "Steering_Smoothness_Score",
-        "Composite_Risk",
-        "RSS_Severity",
-        "Steering_Stability",
-    ]
-    present = [c for c in value_cols if c in df.columns]
-    if not present:
-        return pd.DataFrame()
-    agg = {c: ["count", "mean", "max", "std"] for c in present}
-    return df.groupby(group_cols, dropna=False).agg(agg)
