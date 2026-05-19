@@ -11,9 +11,10 @@ import streamlit as st
 
 from analytics import comparison_table, run_analytics_pipeline
 from column_mapping import (
+    SurveyFileType,
+    analyze_survey_columns,
     apply_manual_column_map,
     missing_columns_message,
-    standardize_survey_columns,
     suggest_column_index,
 )
 from loaders import SurveyDataLoader
@@ -34,32 +35,56 @@ def resolve_survey_columns(df: pd.DataFrame, file_key: str) -> pd.DataFrame | No
     if mapped_key in st.session_state:
         return st.session_state[mapped_key]
 
-    df_mapped, missing = standardize_survey_columns(df)
-    if not missing:
-        st.session_state[mapped_key] = df_mapped
-        return df_mapped
+    analysis = analyze_survey_columns(df)
+    st.caption(analysis.message)
 
-    st.error("Could not automatically identify all required survey columns.")
-    st.markdown(missing_columns_message(missing, df.columns))
-    st.dataframe(df.head(10), use_container_width=True)
+    if analysis.file_type not in (SurveyFileType.SURVEY_STATION, SurveyFileType.INTERVAL_SUMMARY):
+        st.warning(analysis.message)
+        st.markdown(
+            "**Required survey columns:** MD (or MD Start/End for intervals), Inclination, Azimuth. "
+            "Vendor names from Halliburton, Schlumberger, Baker Hughes, Landmark, Compass, and generic Excel exports are supported."
+        )
+        st.dataframe(df.head(15), use_container_width=True)
+        return None
+
+    if not analysis.missing:
+        st.session_state[mapped_key] = analysis.survey
+        if analysis.mapped_columns:
+            with st.expander("Auto-detected column mapping", expanded=False):
+                st.json(analysis.mapped_columns)
+                if analysis.fuzzy_scores:
+                    st.caption({k: round(v, 2) for k, v in analysis.fuzzy_scores.items()})
+        return analysis.survey
+
+    st.error("Could not automatically map all required survey columns.")
+    st.markdown(missing_columns_message(analysis.missing, analysis.survey.columns))
+    st.dataframe(df.head(15), use_container_width=True)
 
     col_options = list(df.columns)
     st.subheader("Manual column mapping")
     c1, c2, c3 = st.columns(3)
-    md_pick = c1.selectbox("MD column", col_options, index=suggest_column_index(col_options, "MD"), key=f"map_md_{file_key}")
+    md_pick = c1.selectbox(
+        "MD column", col_options, index=suggest_column_index(col_options, "MD"), key=f"map_md_{file_key}"
+    )
     inc_pick = c2.selectbox(
-        "Inclination column", col_options, index=suggest_column_index(col_options, "Inclination"), key=f"map_inc_{file_key}"
+        "Inclination column",
+        col_options,
+        index=suggest_column_index(col_options, "Inclination"),
+        key=f"map_inc_{file_key}",
     )
     azi_pick = c3.selectbox(
-        "Azimuth column", col_options, index=suggest_column_index(col_options, "Azimuth"), key=f"map_azi_{file_key}"
+        "Azimuth column",
+        col_options,
+        index=suggest_column_index(col_options, "Azimuth"),
+        key=f"map_azi_{file_key}",
     )
     if st.button("Apply column mapping", type="primary", key=f"apply_map_{file_key}"):
-        df_manual = apply_manual_column_map(df, md_pick, inc_pick, azi_pick)
-        _, still_missing = standardize_survey_columns(df_manual)
-        if still_missing:
-            st.error(missing_columns_message(still_missing, df_manual.columns))
+        remapped = analyze_survey_columns(df, manual_map={"MD": md_pick, "Inclination": inc_pick, "Azimuth": azi_pick})
+        if remapped.missing:
+            st.error(missing_columns_message(remapped.missing, remapped.survey.columns))
         else:
-            st.session_state[mapped_key] = df_manual
+            st.session_state[mapped_key] = remapped.survey
+            st.success("Column mapping applied.")
             st.rerun()
     return None
 

@@ -1,7 +1,9 @@
 import pandas as pd
 
 from column_mapping import (
+    analyze_survey_columns,
     apply_manual_column_map,
+    fuzzy_score,
     standardize_survey_columns,
 )
 
@@ -44,3 +46,21 @@ def test_manual_mapping_custom_headers():
     mapped = apply_manual_column_map(df, "HoleDepth", "DevAngle", "Dir")
     _, missing = standardize_survey_columns(mapped)
     assert missing == []
+
+
+def test_md_start_not_mapped_as_md_on_interval_file():
+    df = pd.DataFrame(
+        {
+            "MD Start": [10.0, 20.0],
+            "MD End": [20.0, 30.0],
+            "INC": [1.0, 2.0],
+            "AZI": [3.0, 4.0],
+        }
+    )
+    result = analyze_survey_columns(df)
+    assert not result.missing
+    assert result.survey["MD"].tolist() == [15.0, 25.0]
+
+
+def test_fuzzy_azm_matches_azimuth():
+    assert fuzzy_score("Azm", "Azimuth") >= 0.72
