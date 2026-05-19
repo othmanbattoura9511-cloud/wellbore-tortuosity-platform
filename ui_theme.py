@@ -22,30 +22,83 @@ def inject_theme() -> None:
         """
         <style>
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+        :root {
+            --dash-bg: #0f1419;
+            --dash-surface: #1a2332;
+            --dash-border: #2d3a4d;
+            --dash-text: #f5f7fa;
+            --dash-muted: #8fa3b8;
+            --dash-accent: #d4a017;
+        }
+        [data-theme="light"] {
+            --dash-bg: #f4f6f9;
+            --dash-surface: #ffffff;
+            --dash-border: #d0d7e2;
+            --dash-text: #1a2332;
+            --dash-muted: #5c6b7a;
+            --dash-accent: #b8860b;
+        }
         html, body, [class*="css"] { font-family: 'DM Sans', 'Segoe UI', sans-serif; }
-        .stApp { background: linear-gradient(165deg, #0a0e14 0%, #0f1419 40%, #121c28 100%); }
+        .stApp {
+            background: linear-gradient(165deg, var(--dash-bg) 0%, var(--dash-surface) 55%, var(--dash-bg) 100%);
+        }
         [data-testid="stSidebar"] {
-            background: linear-gradient(180deg, #121c28 0%, #0f1419 100%);
-            border-right: 1px solid #2d3a4d;
+            background: var(--dash-surface);
+            border-right: 1px solid var(--dash-border);
         }
         .dashboard-hero {
-            background: linear-gradient(135deg, #1a2332 0%, #243447 50%, #1a2332 100%);
-            border: 1px solid #2d3a4d; border-radius: 16px; padding: 1.25rem 1.5rem;
-            margin-bottom: 1rem; box-shadow: 0 8px 32px rgba(0,0,0,0.35);
+            background: linear-gradient(135deg, var(--dash-surface) 0%, var(--dash-border) 120%, var(--dash-surface) 100%);
+            border: 1px solid var(--dash-border);
+            border-radius: 16px;
+            padding: 1.35rem 1.6rem;
+            margin-bottom: 1.25rem;
+            box-shadow: 0 6px 24px rgba(0,0,0,0.12);
         }
-        .dashboard-hero h1 { color: #f5f7fa; font-size: 1.75rem; font-weight: 700; margin: 0 0 0.25rem 0; }
-        .dashboard-hero p { color: #8fa3b8; margin: 0; font-size: 0.95rem; }
+        .dashboard-hero h1 { color: var(--dash-text); font-size: 1.85rem; font-weight: 700; margin: 0 0 0.35rem 0; }
+        .dashboard-hero .tagline { color: var(--dash-muted); margin: 0; font-size: 1rem; line-height: 1.45; }
+        .dashboard-hero .chips { margin-top: 0.65rem; color: var(--dash-muted); font-size: 0.82rem; }
         .hp-logo { float: right; margin-top: -4px; }
         div[data-testid="metric-container"] {
-            background: #1a2332; border: 1px solid #2d3a4d; border-radius: 12px;
-            padding: 0.75rem 1rem;
+            background: var(--dash-surface);
+            border: 1px solid var(--dash-border);
+            border-radius: 12px;
+            padding: 0.85rem 1rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
         }
-        div[data-testid="metric-container"] label { color: #8fa3b8 !important; }
-        div[data-testid="metric-container"] [data-testid="stMetricValue"] { color: #f5f7fa !important; }
+        div[data-testid="metric-container"] label { color: var(--dash-muted) !important; font-size: 0.8rem !important; }
+        div[data-testid="metric-container"] [data-testid="stMetricValue"] {
+            color: var(--dash-text) !important;
+            font-weight: 600 !important;
+        }
+        .kpi-strip { margin: 0.75rem 0 1.25rem 0; }
+        .section-panel {
+            background: var(--dash-surface);
+            border: 1px solid var(--dash-border);
+            border-left: 4px solid var(--dash-accent);
+            border-radius: 12px;
+            padding: 1rem 1.15rem;
+            margin-bottom: 0.85rem;
+        }
+        .section-panel h4 { color: var(--dash-text); margin: 0 0 0.65rem 0; font-size: 1rem; }
+        .section-panel .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 0.5rem 1rem;
+        }
+        .section-panel .item label {
+            display: block; color: var(--dash-muted); font-size: 0.72rem;
+            text-transform: uppercase; letter-spacing: 0.04em;
+        }
+        .section-panel .item span { color: var(--dash-text); font-size: 0.92rem; font-weight: 500; }
         .soft-warning {
-            background: rgba(212, 160, 23, 0.12); border-left: 4px solid #d4a017;
-            padding: 0.75rem 1rem; border-radius: 0 8px 8px 0; color: #e8eef4; margin: 0.5rem 0;
+            background: rgba(212, 160, 23, 0.12);
+            border-left: 4px solid var(--dash-accent);
+            padding: 0.75rem 1rem;
+            border-radius: 0 8px 8px 0;
+            color: var(--dash-text);
+            margin: 0.5rem 0;
         }
+        [data-testid="stTabs"] button { font-weight: 600; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -53,17 +106,55 @@ def inject_theme() -> None:
 
 
 def render_header(show_hp_branding: bool = True) -> None:
-    logo = f'<div class="hp-logo">{HP_LOGO_SVG}</div>' if show_hp_branding else ""
-    st.markdown(
-        f'<div class="dashboard-hero">{logo}'
+    logo = f'<motion-placeholder class="hp-logo">{HP_LOGO_SVG}</motion-placeholder>' if show_hp_branding else ""
+    html = (
+        f'<motion-placeholder class="dashboard-hero">{logo}'
         "<h1>Wellbore Tortuosity Analytics</h1>"
-        "<p>Drilling engineering · V / C / L · Motor vs RSS · multi-BHA</p></div>",
+        '<p class="tagline">Drilling engineering analytics and BHA performance platform</p>'
+        '<p class="chips">V / C / L sections · Motor vs RSS · multi-BHA · multi-survey</p>'
+        "</motion-placeholder>"
+    )
+    st.markdown(html.replace("motion-placeholder", "div"), unsafe_allow_html=True)
+
+
+def soft_warning(message: str) -> None:
+    st.markdown(
+        f'<motion-placeholder class="soft-warning">{message}</motion-placeholder>'.replace("motion-placeholder", "div"),
         unsafe_allow_html=True,
     )
 
 
-def soft_warning(message: str) -> None:
-    st.markdown(f'<div class="soft-warning">{message}</div>', unsafe_allow_html=True)
+def render_kpi_row(metrics: list[tuple[str, str]], compact: bool = False) -> None:
+    cols = st.columns(len(metrics))
+    for slot, (label, value) in zip(cols, metrics):
+        slot.metric(label, value)
+    if not compact:
+        st.markdown('<div class="kpi-strip"></div>', unsafe_allow_html=True)
+
+
+def _panel_value(val: object) -> str:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return "—"
+    return str(val)
+
+
+def render_section_panel(title: str, fields: list[tuple[str, object]], accent: str = "vertical") -> None:
+    border_colors = {
+        "vertical": PALETTE["vertical"],
+        "curve": PALETTE["curve"],
+        "lateral": PALETTE["lateral"],
+        "accent": PALETTE["accent"],
+    }
+    color = border_colors.get(accent, PALETTE["accent"])
+    items = "".join(
+        f"<motion-placeholder class='item'><label>{lbl}</label><span>{_panel_value(val)}</span></motion-placeholder>"
+        for lbl, val in fields
+    ).replace("motion-placeholder", "div")
+    html = (
+        f"<motion-placeholder class='section-panel' style='border-left-color:{color};'>"
+        f"<h4>{title}</h4><div class='grid'>{items}</div></motion-placeholder>"
+    ).replace("motion-placeholder", "div")
+    st.markdown(html, unsafe_allow_html=True)
 
 
 def render_wellpath_hero(df: pd.DataFrame) -> None:
@@ -72,19 +163,30 @@ def render_wellpath_hero(df: pd.DataFrame) -> None:
     work = df.sort_values("MD")
     fig = go.Figure()
     if "Section_Code" in work.columns:
-        for code, label, c in [("V", "Vertical", PALETTE["vertical"]), ("C", "Curve", PALETTE["curve"]), ("L", "Lateral", PALETTE["lateral"])]:
+        for code, label, c in [
+            ("V", "Vertical", PALETTE["vertical"]),
+            ("C", "Curve", PALETTE["curve"]),
+            ("L", "Lateral", PALETTE["lateral"]),
+        ]:
             sub = work[work["Section_Code"] == code]
             if not sub.empty:
-                fig.add_trace(go.Scatter(x=sub["Inclination"], y=sub["MD"], mode="lines", name=label, line=dict(color=c, width=3)))
+                fig.add_trace(
+                    go.Scatter(x=sub["Inclination"], y=sub["MD"], mode="lines", name=label, line=dict(color=c, width=3))
+                )
     else:
-        fig.add_trace(go.Scatter(x=work["Inclination"], y=work["MD"], mode="lines", name="Wellpath", line=dict(color=PALETTE["accent"], width=3)))
-    fig.update_layout(title="Well trajectory", xaxis_title="Inclination (deg)", yaxis_title="MD (m)", yaxis=dict(autorange="reversed"), height=300)
-    apply_chart_style(fig)
+        fig.add_trace(
+            go.Scatter(x=work["Inclination"], y=work["MD"], mode="lines", name="Wellpath", line=dict(color=PALETTE["accent"], width=3))
+        )
+    fig.update_layout(title="Well trajectory", yaxis=dict(autorange="reversed"), height=320)
+    apply_chart_style(fig, "Well trajectory (inclination vs MD)", "MD (m)", "Inclination (deg)", rangeslider=False)
+    fig.update_xaxes(title_text="Inclination (deg)")
+    fig.update_yaxes(title_text="MD (m)")
     st.plotly_chart(fig, use_container_width=True)
 
 
 def bha_editor_column_config() -> dict:
     from streamlit import column_config
+
     return {
         "MD In": column_config.NumberColumn("MD In", help="Start MD (m)", format="%.1f"),
         "MD Out": column_config.NumberColumn("MD Out", help="End MD (m)", format="%.1f"),
