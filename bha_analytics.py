@@ -32,9 +32,12 @@ def summarize_bha_run(survey: pd.DataFrame, row: pd.Series) -> Dict[str, Any]:
     if not subset.empty and "Section_Code" in subset.columns:
         section_mix = subset["Section_Code"].value_counts(normalize=True).round(3).to_dict()
 
-    pattern_mode = "Unknown"
-    if not subset.empty and "Pattern_Type" in subset.columns:
-        pattern_mode = str(subset["Pattern_Type"].mode().iloc[0])
+    severity_mode = "Unknown"
+    concern_mode = "Unknown"
+    if not subset.empty and "Trajectory_Severity" in subset.columns:
+        severity_mode = str(subset["Trajectory_Severity"].mode().iloc[0])
+    if not subset.empty and "Primary_Concern" in subset.columns:
+        concern_mode = str(subset["Primary_Concern"].mode().iloc[0])
 
     return {
         "BHA_Run": row.get("BHA_Run", row.get("BHA", "Unknown")),
@@ -51,7 +54,8 @@ def summarize_bha_run(survey: pd.DataFrame, row: pd.Series) -> Dict[str, Any]:
         "Max_DLS": _safe_max(subset.get("DLS", pd.Series(dtype=float))),
         "Mean_Tortuosity": _safe_mean(subset.get("Tortuosity_Index_Local", pd.Series(dtype=float))),
         "Max_Tortuosity": _safe_max(subset.get("Tortuosity_Index_Local", pd.Series(dtype=float))),
-        "Dominant_Pattern": pattern_mode,
+        "Dominant_Severity": severity_mode,
+        "Dominant_Concern": concern_mode,
         "RSS_Severity": _safe_mean(subset.get("RSS_Severity", pd.Series(dtype=float))),
         "Steering_Stability": _safe_mean(subset.get("Steering_Stability", pd.Series(dtype=float))),
         "Section_V_pct": section_mix.get("V", 0.0),

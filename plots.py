@@ -10,13 +10,9 @@ SECTION_COLORS = {
     "Lateral": "#1565c0",
 }
 
-PATTERN_COLORS = {
-    "Normal": "#546e7a",
-    "Sinusoidal": "#1565c0",
-    "Helical": "#6a1b9a",
-    "Micro-tortuosity": "#c62828",
-    "Chaotic": "#ef6c00",
-}
+from pattern_recognition import SEVERITY_ORDER, severity_color
+
+SEVERITY_COLORS = {s: severity_color(s) for s in SEVERITY_ORDER}
 
 
 def _section_color_map(df: pd.DataFrame) -> dict:
@@ -60,20 +56,52 @@ class WellPlots:
             category_orders={"Well_Section": list(color_map.keys())},
         )
 
-    def plot_pattern_by_section(self, df):
-        if "Pattern_Type" not in df.columns or "Well_Section" not in df.columns:
+    def plot_severity_by_section(self, df):
+        if "Trajectory_Severity" not in df.columns or "Well_Section" not in df.columns:
             return None
-        cross = df.groupby(["Well_Section", "Pattern_Type"], observed=False).size().reset_index(name="count")
+        cross = df.groupby(["Well_Section", "Trajectory_Severity"], observed=False).size().reset_index(name="count")
         color_map = _section_color_map(df)
         return px.bar(
             cross,
             x="Well_Section",
             y="count",
-            color="Pattern_Type",
-            color_discrete_map=PATTERN_COLORS,
-            title="Pattern distribution by section",
+            color="Trajectory_Severity",
+            color_discrete_map=SEVERITY_COLORS,
+            title="Trajectory severity by well section (V / C / L)",
             barmode="group",
-            category_orders={"Well_Section": list(color_map.keys())},
+            category_orders={
+                "Well_Section": list(color_map.keys()),
+                "Trajectory_Severity": SEVERITY_ORDER,
+            },
+        )
+
+    def plot_severity_along_md(self, df):
+        if "Trajectory_Severity" not in df.columns:
+            return None
+        work = df.copy()
+        work["Severity_Rank"] = work["Trajectory_Severity"].map(
+            {s: i for i, s in enumerate(SEVERITY_ORDER)}
+        )
+        return px.scatter(
+            work,
+            x="MD",
+            y="Composite_Risk",
+            color="Trajectory_Severity",
+            hover_data=["Primary_Concern", "Mean_DLS_Local", "Oscillation_Score"],
+            color_discrete_map=SEVERITY_COLORS,
+            title="Composite drilling risk vs measured depth",
+        )
+
+    def plot_kpi_timeline(self, df, kpi_col: str = "Oscillation_Score"):
+        if kpi_col not in df.columns:
+            return None
+        return px.line(
+            df,
+            x="MD",
+            y=kpi_col,
+            color="Trajectory_Severity",
+            color_discrete_map=SEVERITY_COLORS,
+            title=f"{kpi_col.replace('_', ' ')} vs MD",
         )
 
     def plot_tortuosity_by_section(self, df):

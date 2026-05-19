@@ -24,18 +24,23 @@ class RSSAnalysisResult:
 class RSSSteeringAnalyzer:
     def analyze(self, df: pd.DataFrame) -> RSSAnalysisResult:
         work = df.copy()
-        pattern = work.get("Pattern_Type", pd.Series("Normal", index=work.index))
         dls = pd.to_numeric(work.get("DLS", work.get("DLS_Calc", 0)), errors="coerce").fillna(0)
         build = work.get("Build_Rate", pd.Series(0, index=work.index)).abs()
+        oscillation = work.get("Oscillation_Score", pd.Series(0, index=work.index))
+        smooth = work.get("Steering_Smoothness_Score", pd.Series(0.5, index=work.index))
+        rss_agg = work.get("RSS_Aggressiveness", pd.Series(0, index=work.index))
 
         push_score = (
-            pattern.isin(["Sinusoidal", "Helical"]).astype(float) * 0.5
-            + (build / (build.quantile(0.75) + 1e-6)).clip(0, 2) * 0.3
-            + (1.0 - (dls / (dls.quantile(0.95) + 1e-6)).clip(0, 2)) * 0.2
+            (1.0 - oscillation).clip(0, 1) * 0.35
+            + smooth * 0.25
+            + (build / (build.quantile(0.75) + 1e-6)).clip(0, 2) * 0.25
+            + (1.0 - (dls / (dls.quantile(0.95) + 1e-6)).clip(0, 2)) * 0.15
         )
         point_score = (
-            pattern.isin(["Micro-tortuosity", "Chaotic"]).astype(float) * 0.6
-            + (dls / (dls.quantile(0.75) + 1e-6)).clip(0, 3) * 0.4
+            oscillation.clip(0, 1) * 0.35
+            + rss_agg * 0.25
+            + (dls / (dls.quantile(0.75) + 1e-6)).clip(0, 3) * 0.25
+            + (1.0 - smooth).clip(0, 1) * 0.15
         )
 
         rss_type = np.where(
@@ -46,8 +51,9 @@ class RSSSteeringAnalyzer:
         work["RSS_Type"] = rss_type
         work["RSS_Confidence"] = (np.maximum(push_score, point_score) / (push_score + point_score + 1e-6)).clip(0, 1)
         work["RSS_Severity"] = (
-            (dls / (dls.quantile(0.9) + 1e-6)).clip(0, 2) * 0.5
-            + pattern.isin(["Micro-tortuosity", "Chaotic", "Helical"]).astype(float) * 0.5
+            rss_agg * 0.5
+            + oscillation.clip(0, 1) * 0.3
+            + (dls / (dls.quantile(0.9) + 1e-6)).clip(0, 2) * 0.2
         ).clip(0, 1)
         turn = work.get("Turn_Rate", pd.Series(0, index=work.index)).abs()
         work["Steering_Stability"] = (

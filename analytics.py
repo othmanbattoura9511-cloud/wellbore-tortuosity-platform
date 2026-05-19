@@ -87,6 +87,7 @@ def run_analytics_pipeline(df: pd.DataFrame, bha_intervals: Optional[pd.DataFram
 
     pattern_result = PatternRecognitionEngine().detect_patterns(work)
     work = pattern_result.survey
+    pattern_summary = pattern_result.summary
 
     rss_result = RSSSteeringAnalyzer().analyze(work)
     work = rss_result.survey
@@ -100,7 +101,7 @@ def run_analytics_pipeline(df: pd.DataFrame, bha_intervals: Optional[pd.DataFram
     return AnalyticsResult(
         survey=work,
         section_summary=section_result.summary,
-        pattern_summary=pattern_result.summary,
+        pattern_summary=pattern_summary,
         rss_summary=rss_result.summary,
         bha_runs=bha_runs,
         bha_ranking=bha_ranking,
@@ -110,9 +111,11 @@ def run_analytics_pipeline(df: pd.DataFrame, bha_intervals: Optional[pd.DataFram
 def comparison_table(df: pd.DataFrame, group_cols: List[str], value_cols: Optional[List[str]] = None) -> pd.DataFrame:
     value_cols = value_cols or [
         "DLS",
-        "Tortuosity_Index_Local",
-        "Build_Rate",
-        "Section_Confidence",
+        "Tortuosity_Index",
+        "Mean_DLS_Local",
+        "Oscillation_Score",
+        "Steering_Smoothness_Score",
+        "Composite_Risk",
         "RSS_Severity",
         "Steering_Stability",
     ]

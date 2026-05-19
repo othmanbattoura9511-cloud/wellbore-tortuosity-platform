@@ -14,5 +14,12 @@ def test_pipeline_runs_on_synthetic_well():
 
     result = run_analytics_pipeline(df)
     survey = result.survey
-    for col in ("Well_Section", "Section_Confidence", "Pattern_Type", "RSS_Type", "DLS"):
+    for col in (
+        "Well_Section",
+        "Section_Confidence",
+        "Trajectory_Severity",
+        "Primary_Concern",
+        "RSS_Type",
+        "DLS",
+    ):
         assert col in survey.columns

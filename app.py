@@ -209,7 +209,7 @@ if df.empty and section_filter_codes:
 
 # --- Tabs ---
 tab_overview, tab_sections, tab_compare, tab_patterns, tab_bha, tab_survey = st.tabs(
-    ["Overview", "Section analysis", "Comparisons", "Patterns & tortuosity", "BHA & RSS", "Survey data"]
+    ["Overview", "Section analysis", "Comparisons", "Trajectory & tortuosity", "BHA & RSS", "Survey data"]
 )
 
 with tab_overview:
@@ -242,18 +242,69 @@ with tab_compare:
     _show_comparison_table(df, ["Drilling_System"], "Motor vs RSS vs Rotary")
     _show_comparison_table(df, ["RSS_Type"], "Push-the-bit vs Point-the-bit")
     _show_comparison_table(df, ["Hole_Size"], "Hole size")
-    _show_comparison_table(df, ["Pattern_Type"], "Pattern type")
+    _show_comparison_table(df, ["Trajectory_Severity"], "Trajectory severity (Stable → Critical)")
+    _show_comparison_table(df, ["Primary_Concern"], "Primary engineering concern")
     _show_comparison_table(df, ["Section_Code", "Drilling_System"], "Section × drilling system")
     _show_comparison_table(df, ["Section_Code", "RSS_Type"], "Section × RSS type")
     _show_comparison_table(df, ["Section_Code", "Hole_Size"], "Section × hole size")
-    _show_comparison_table(df, ["Section_Code", "Pattern_Type"], "Section × pattern type")
+    _show_comparison_table(df, ["Section_Code", "Trajectory_Severity"], "Section × trajectory severity")
     if "BHA_Run" in df.columns and df["BHA_Run"].nunique() > 1:
         _show_comparison_table(df, ["BHA_Run"], "BHA run comparison (survey-mapped)")
 
 with tab_patterns:
-    st.json(result.pattern_summary)
-    st.plotly_chart(plots.plot_pattern_by_section(df), use_container_width=True)
+    st.subheader("Engineering trajectory quality")
+    defs = result.pattern_summary.get("severity_definitions", {})
+    if defs:
+        st.markdown(
+            "**Severity levels:** "
+            + " · ".join(f"**{k}** — {v}" for k, v in defs.items())
+        )
+    c1, c2, c3, c4 = st.columns(4)
+    sev_counts = result.pattern_summary.get("severity_counts", {})
+    c1.metric("Stable", sev_counts.get("Stable", 0))
+    c2.metric("Moderate", sev_counts.get("Moderate", 0))
+    c3.metric("Aggressive", sev_counts.get("Aggressive", 0))
+    c4.metric("Critical", sev_counts.get("Critical", 0))
+
+    st.plotly_chart(plots.plot_severity_along_md(df), use_container_width=True)
+    st.plotly_chart(plots.plot_severity_by_section(df), use_container_width=True)
+    st.plotly_chart(plots.plot_kpi_timeline(df, "Oscillation_Score"), use_container_width=True)
+    st.plotly_chart(plots.plot_kpi_timeline(df, "Steering_Smoothness_Score"), use_container_width=True)
     st.plotly_chart(plots.plot_tortuosity_map(df), use_container_width=True)
+
+    st.subheader("Interval KPIs (by V / C / L section)")
+    interval_rows = result.pattern_summary.get("interval_kpis", [])
+    if interval_rows:
+        st.dataframe(pd.DataFrame(interval_rows), use_container_width=True)
+    else:
+        st.caption("Section intervals will appear after survey classification.")
+
+    st.subheader("Station diagnostics (engineering language)")
+    diag_cols = [
+        c
+        for c in [
+            "MD",
+            "Well_Section",
+            "Section_Code",
+            "Trajectory_Severity",
+            "Primary_Concern",
+            "Engineering_Diagnostics",
+            "Mean_DLS_Local",
+            "DLS_Variance",
+            "Oscillation_Score",
+            "Steering_Smoothness_Score",
+            "Tortuosity_Index",
+            "Slide_Rotate_Tendency",
+        ]
+        if c in df_full.columns
+    ]
+    st.dataframe(df_full[diag_cols].head(150), use_container_width=True)
+
+    with st.expander("Advanced pattern diagnostics (optional — expert review only)"):
+        st.caption("Legacy sinusoidal / helical / micro-tortuosity proxies — not used for primary operational labels.")
+        adv_cols = [c for c in df_full.columns if str(c).startswith("Diagnostic_Advanced_")]
+        if adv_cols:
+            st.dataframe(df_full[["MD"] + adv_cols].head(100), use_container_width=True)
 
 with tab_bha:
     if not result.bha_runs.empty:
