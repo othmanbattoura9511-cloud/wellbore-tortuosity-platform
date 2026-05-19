@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from bha_analytics import build_bha_runs_table, rank_bha_performance
 from bha_extraction import normalize_bha_intervals
 from comparison_tables import (
     build_drilling_system_comparison_table,
@@ -30,6 +31,9 @@ class AnalyticsResult:
     system_comparison: pd.DataFrame = field(default_factory=pd.DataFrame)
     rss_steering_comparison: pd.DataFrame = field(default_factory=pd.DataFrame)
     hole_size_comparison: pd.DataFrame = field(default_factory=pd.DataFrame)
+    bha_runs: pd.DataFrame = field(default_factory=pd.DataFrame)
+    bha_ranking: pd.DataFrame = field(default_factory=pd.DataFrame)
+    rss_summary: Dict[str, Any] = field(default_factory=dict)
 
 
 def ensure_metadata_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -92,12 +96,15 @@ def run_analytics_pipeline(df: pd.DataFrame, bha_intervals: Optional[pd.DataFram
     kpi_result = EngineeringKpiEngine().compute(work)
     work = kpi_result.survey
 
-    work = RSSSteeringAnalyzer().analyze(work).survey
+    rss_result = RSSSteeringAnalyzer().analyze(work)
+    work = rss_result.survey
     work = apply_bha_intervals(work, bha_intervals)
 
     intervals = normalize_bha_intervals(bha_intervals)
     section_table = build_section_comparison_table(work, intervals)
     system_table = build_drilling_system_comparison_table(section_table)
+    bha_runs = build_bha_runs_table(work, intervals)
+    bha_ranking = rank_bha_performance(bha_runs) if not bha_runs.empty else pd.DataFrame()
 
     return AnalyticsResult(
         survey=work,
@@ -107,4 +114,26 @@ def run_analytics_pipeline(df: pd.DataFrame, bha_intervals: Optional[pd.DataFram
         system_comparison=system_table,
         rss_steering_comparison=build_rss_steering_comparison(section_table),
         hole_size_comparison=build_hole_size_comparison(section_table),
+        bha_runs=bha_runs,
+        bha_ranking=bha_ranking,
+        rss_summary=rss_result.summary,
     )
+
+
+def comparison_table(df: pd.DataFrame, group_cols: List[str], value_cols: Optional[List[str]] = None) -> pd.DataFrame:
+    value_cols = value_cols or [
+        "DLS",
+        "Tortuosity_Index",
+        "Wellbore_Smoothness",
+        "Stability",
+        "Inclination_Control",
+        "Azimuth_Control",
+        "Build_Efficiency",
+        "RSS_Severity",
+        "Steering_Stability",
+    ]
+    present = [c for c in value_cols if c in df.columns]
+    if not present:
+        return pd.DataFrame()
+    agg = {c: ["count", "mean", "max", "std"] for c in present}
+    return df.groupby(group_cols, dropna=False).agg(agg)

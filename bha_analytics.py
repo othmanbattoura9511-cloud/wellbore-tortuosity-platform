@@ -111,10 +111,12 @@ def rank_bha_performance(runs_table: pd.DataFrame) -> pd.DataFrame:
     ranked_idx = out.index[complete_mask]
     ranked = out.loc[ranked_idx].copy()
     ranked["Performance_Score"] = _compute_performance_score(ranked)
-
-    ranked["Rank"] = (
-        ranked["Performance_Score"].rank(method="min", na_option="bottom").astype("Int64")
-    )
+    ranked["Rank"] = pd.Series(pd.NA, index=ranked.index, dtype="Int64")
+    score_ok = ranked["Performance_Score"].notna()
+    if score_ok.any():
+        ranked.loc[score_ok, "Rank"] = (
+            ranked.loc[score_ok, "Performance_Score"].rank(method="min").astype("Int64")
+        )
 
     out.loc[ranked_idx, "Performance_Score"] = ranked["Performance_Score"]
     out.loc[ranked_idx, "Rank"] = ranked["Rank"]

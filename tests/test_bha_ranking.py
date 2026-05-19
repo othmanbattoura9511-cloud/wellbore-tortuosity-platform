@@ -47,7 +47,7 @@ def test_rank_skips_incomplete_intervals():
     assert complete["Rank"].dtype.name == "Int64"
 
 
-def test_rank_with_nan_scores_uses_nullable_int():
+def test_rank_with_nan_scores_leaves_rank_null():
     runs = pd.DataFrame(
         [
             {
@@ -63,6 +63,7 @@ def test_rank_with_nan_scores_uses_nullable_int():
     ranked = rank_bha_performance(runs)
     assert "Rank" in ranked.columns
     assert ranked["Rank"].dtype.name == "Int64"
+    assert ranked["Rank"].isna().all()
 
 
 def test_build_runs_marks_incomplete():

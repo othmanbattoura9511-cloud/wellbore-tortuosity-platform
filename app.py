@@ -1,12 +1,12 @@
-"""Drilling engineering comparison platform — V/C/L sections, BHA & system KPIs."""
+"""Wellbore Tortuosity Analytics Platform — drilling engineering dashboard."""
 
 from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
 
-from analytics import run_analytics_pipeline
-from bha_analytics import build_bha_runs_table, incomplete_bha_runs, rank_bha_performance
+from analytics import comparison_table, run_analytics_pipeline
+from bha_analytics import incomplete_bha_runs
 from bha_extraction import BHA_COLUMNS, extract_bha_runs_from_uploads, normalize_bha_intervals
 from column_mapping import (
     SurveyFileType,
@@ -19,6 +19,7 @@ from paths import PROJECT_ROOT, SAMPLE_SURVEY_CSV
 from plots import WellPlots
 from sections import filter_by_section_codes
 from survey_merge import load_and_merge_surveys
+from survey_quality import SurveyQualityAnalyzer
 from upload_utils import save_uploaded_file, uploaded_file_key
 
 
@@ -92,39 +93,45 @@ def _bha_key(files) -> str:
     return "|".join(uploaded_file_key(f) for f in files)
 
 
-st.set_page_config(page_title="Drilling Comparison Platform", layout="wide")
-st.title("Drilling Engineering Comparison Platform")
-st.markdown(
-    "Compare **Motor vs RSS**, hole size, and **BHA performance** by well section "
-    "**(V vertical · C curve/build · L lateral)** using survey inclination, DLS, and azimuth."
+def _show_table(df: pd.DataFrame, title: str) -> None:
+    st.subheader(title)
+    if df is None or df.empty:
+        st.caption("No data available for this view.")
+    else:
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+st.set_page_config(page_title="Wellbore Tortuosity Platform", layout="wide", initial_sidebar_state="expanded")
+st.title("Wellbore Tortuosity Analytics Platform")
+st.caption(
+    "Drilling engineering comparison · **V / C / L** sections · Motor vs RSS · multi-BHA · multi-survey"
 )
 
 with st.sidebar:
-    st.header("Well data")
+    st.header("Data inputs")
     use_sample = st.button("Load sample survey", use_container_width=True)
     survey_files = st.file_uploader(
-        "Survey file(s) — multiple allowed per well",
+        "Survey file(s)",
         type=["xlsx", "xls", "csv"],
         accept_multiple_files=True,
         key="survey_files",
     )
     bha_files = st.file_uploader(
-        "BHA PDF(s) — one file per assembly/run",
+        "BHA PDF(s)",
         type=["pdf"],
         accept_multiple_files=True,
         key="bha_files",
     )
 
-    st.header("Section display")
+    st.header("Section filter")
     filt_v = st.checkbox("V — Vertical", True)
     filt_c = st.checkbox("C — Curve / build", True)
     filt_l = st.checkbox("L — Lateral", True)
     section_codes = [c for c, on in zip(["V", "C", "L"], [filt_v, filt_c, filt_l]) if on]
 
     if SAMPLE_SURVEY_CSV.is_file():
-        st.caption(f"Sample: `{SAMPLE_SURVEY_CSV.name}`")
+        st.caption(f"Sample: `{SAMPLE_SURVEY_CSV.relative_to(PROJECT_ROOT).as_posix()}`")
 
-# --- Surveys ---
 if use_sample:
     st.session_state.pop("survey_merged", None)
     st.session_state.pop("survey_merge_key", None)
@@ -134,7 +141,6 @@ if df_survey is None:
     st.info("Upload one or more survey files, or load the sample well.")
     st.stop()
 
-# --- BHA ---
 bha_intervals = pd.DataFrame()
 if bha_files:
     bk = _bha_key(bha_files)
@@ -145,15 +151,6 @@ if bha_files:
         st.session_state.pop("bha_intervals", None)
 
 if "bha_intervals_raw" in st.session_state and not st.session_state["bha_intervals_raw"].empty:
-    with st.expander("BHA runs — edit MD intervals & apply", expanded=True):
-        edited = st.data_editor(
-            st.session_state["bha_intervals_raw"][[c for c in BHA_COLUMNS if c in st.session_state["bha_intervals_raw"].columns]],
-            use_container_width=True,
-            num_rows="dynamic",
-        )
-        if st.button("Apply BHA MD mapping", type="primary"):
-            st.session_state["bha_intervals"] = normalize_bha_intervals(edited)
-            st.rerun()
     bha_intervals = st.session_state.get(
         "bha_intervals",
         normalize_bha_intervals(st.session_state["bha_intervals_raw"]),
@@ -161,104 +158,177 @@ if "bha_intervals_raw" in st.session_state and not st.session_state["bha_interva
 else:
     bha_intervals = st.session_state.get("bha_intervals", pd.DataFrame())
 
-if not bha_intervals.empty:
-    for _, row in incomplete_bha_runs(bha_intervals).iterrows():
-        label = row.get("BHA_Run", row.get("Source_File", "BHA"))
-        st.warning(f"Please enter MD_In and MD_Out to map **{label}** to the survey.")
-
-# --- Analytics ---
 result = run_analytics_pipeline(df_survey, bha_intervals if not bha_intervals.empty else None)
 df_full = result.survey
 df = filter_by_section_codes(df_full, section_codes)
+quality = SurveyQualityAnalyzer().evaluate(df_full)
 plots = WellPlots()
 
-if df.empty:
-    st.warning("No stations match the selected sections (V / C / L).")
+if df.empty and section_codes:
+    st.warning("No stations match the selected section filters.")
     st.stop()
 
-# --- Metrics strip ---
-m1, m2, m3, m4, m5 = st.columns(5)
-m1.metric("Survey stations", len(df_full))
-m2.metric("MD end (m)", f"{df_full['MD'].max():.0f}")
-m3.metric("BHA runs", len(bha_intervals) if not bha_intervals.empty else 0)
-m4.metric("Avg tortuosity", f"{result.kpi_summary.get('mean_tortuosity', 0):.2f}")
-m5.metric("Avg stability", f"{result.kpi_summary.get('mean_stability', 0):.2f}")
+tab_overview, tab_sections, tab_compare, tab_patterns, tab_bha, tab_survey = st.tabs(
+    [
+        "Overview",
+        "Section analysis",
+        "Comparisons",
+        "Patterns & tortuosity",
+        "BHA & RSS",
+        "Survey data",
+    ]
+)
 
-# --- Charts (minimal) ---
-st.subheader("Trajectory")
-c1, c2 = st.columns(2)
-with c1:
+with tab_overview:
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Stations", len(df_full))
+    c2.metric("MD end (m)", f"{quality.get('md_end', df_full['MD'].max()):.0f}")
+    c3.metric("Max DLS", f"{quality.get('max_dls', df_full['DLS'].max()):.2f}")
+    c4.metric("Avg tortuosity", f"{result.kpi_summary.get('mean_tortuosity', 0):.2f}")
+    c5.metric("Dominant section", str(result.section_summary.get("dominant_section", "—")))
+
     st.plotly_chart(plots.plot_inclination_vs_md(df), use_container_width=True)
-with c2:
+    st.plotly_chart(plots.plot_dls(df), use_container_width=True)
     tort_fig = plots.plot_tortuosity_vs_md(df)
     if tort_fig:
         st.plotly_chart(tort_fig, use_container_width=True)
+    dist = plots.plot_section_distribution(df)
+    if dist:
+        st.plotly_chart(dist, use_container_width=True)
 
-# --- TABLE 1 ---
-st.subheader("Table 1 — Section comparison")
-st.caption(
-    "Per **V / C / L** interval within each **BHA run**: DLS, tortuosity, wellbore smoothness, and drilling stability."
-)
-if not result.section_comparison.empty:
-    st.dataframe(result.section_comparison, use_container_width=True, hide_index=True)
-else:
-    st.info("Upload BHA PDFs with MD intervals to populate BHA and system columns, or data will show section-only rows.")
+with tab_sections:
+    st.markdown("Automatic **V / C / L** classification from inclination, DLS, and azimuth.")
+    st.json(result.section_summary)
+    st.dataframe(
+        df_full[
+            [
+                c
+                for c in [
+                    "MD",
+                    "Inclination",
+                    "Azimuth",
+                    "DLS",
+                    "Build_Rate",
+                    "Turn_Rate",
+                    "Well_Section",
+                    "Section_Code",
+                    "Section_Confidence",
+                ]
+                if c in df_full.columns
+            ]
+        ].head(250),
+        use_container_width=True,
+    )
+    box = plots.plot_tortuosity_by_section(df)
+    if box:
+        st.plotly_chart(box, use_container_width=True)
 
-# --- TABLE 2 ---
-st.subheader("Table 2 — Drilling system comparison")
-st.caption("**Motor vs RSS vs Rotary** — average KPIs and best-performing section per system.")
-if not result.system_comparison.empty:
-    st.dataframe(result.system_comparison, use_container_width=True, hide_index=True)
-else:
-    st.caption("Map BHA PDFs with drilling system labels to enable system comparison.")
+with tab_compare:
+    _show_table(result.section_comparison, "Section comparison (V / C / L × BHA)")
+    _show_table(result.system_comparison, "Drilling system comparison (Motor vs RSS vs Rotary)")
 
-# --- Supplementary comparisons (compact) ---
-if not bha_intervals.empty:
-    bha_runs = build_bha_runs_table(df_full, bha_intervals)
-    bha_ranking = rank_bha_performance(bha_runs)
-    ranked_complete = bha_ranking[bha_ranking["Interval_Complete"].astype(bool)] if not bha_ranking.empty else bha_ranking
-    if not ranked_complete.empty and ranked_complete["Rank"].notna().any():
-        with st.expander("BHA performance ranking (complete intervals only)"):
+    st.subheader("Detailed survey comparisons")
+    _show_table(comparison_table(df, ["Section_Code", "Well_Section"]), "V vs C vs L")
+    _show_table(comparison_table(df, ["Drilling_System"]), "Motor vs RSS vs Rotary")
+    _show_table(comparison_table(df, ["RSS_Type"]), "Push-the-bit vs Point-the-bit")
+    _show_table(comparison_table(df, ["Hole_Size"]), "Hole size")
+    _show_table(comparison_table(df, ["Section_Code", "Drilling_System"]), "Section × drilling system")
+    _show_table(comparison_table(df, ["Section_Code", "RSS_Type"]), "Section × RSS steering")
+    _show_table(comparison_table(df, ["Section_Code", "Hole_Size"]), "Section × hole size")
+    if "BHA_Run" in df.columns and df["BHA_Run"].nunique() > 1:
+        _show_table(comparison_table(df, ["BHA_Run"]), "BHA run comparison")
+
+with tab_patterns:
+    st.markdown("Engineering trajectory KPIs — tortuosity, smoothness, stability, and control.")
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Mean DLS", f"{result.kpi_summary.get('mean_dls', 0):.2f}")
+    k2.metric("Mean tortuosity", f"{result.kpi_summary.get('mean_tortuosity', 0):.2f}")
+    k3.metric("Mean stability", f"{result.kpi_summary.get('mean_stability', 0):.2f}")
+    k4.metric("Mean smoothness", f"{result.kpi_summary.get('mean_smoothness', 0):.2f}")
+
+    st.plotly_chart(plots.plot_tortuosity_vs_md(df_full), use_container_width=True)
+    smooth_fig = plots.plot_kpi_timeline(df_full, "Wellbore_Smoothness")
+    if smooth_fig:
+        st.plotly_chart(smooth_fig, use_container_width=True)
+    stab_fig = plots.plot_kpi_timeline(df_full, "Stability")
+    if stab_fig:
+        st.plotly_chart(stab_fig, use_container_width=True)
+    box = plots.plot_tortuosity_by_section(df)
+    if box:
+        st.plotly_chart(box, use_container_width=True)
+
+with tab_bha:
+    if not bha_intervals.empty:
+        for _, row in incomplete_bha_runs(bha_intervals).iterrows():
+            label = row.get("BHA_Run", row.get("Source_File", "BHA"))
+            st.warning(f"Please enter **MD_In** and **MD_Out** to map **{label}** to the survey.")
+
+    with st.expander("Edit BHA runs & MD intervals", expanded=not bha_intervals.empty):
+        if "bha_intervals_raw" in st.session_state and not st.session_state["bha_intervals_raw"].empty:
+            edited = st.data_editor(
+                st.session_state["bha_intervals_raw"][
+                    [c for c in BHA_COLUMNS if c in st.session_state["bha_intervals_raw"].columns]
+                ],
+                use_container_width=True,
+                num_rows="dynamic",
+            )
+            if st.button("Apply BHA MD mapping", type="primary"):
+                st.session_state["bha_intervals"] = normalize_bha_intervals(edited)
+                st.rerun()
+        else:
+            st.caption("Upload BHA PDFs in the sidebar.")
+
+    if not result.bha_runs.empty:
+        st.subheader("BHA runs")
+        st.dataframe(result.bha_runs, use_container_width=True, hide_index=True)
+
+        tl = plots.plot_bha_timeline(result.bha_runs, float(df_full["MD"].max()))
+        if tl:
+            st.plotly_chart(tl, use_container_width=True)
+
+        ranked = result.bha_ranking
+        if not ranked.empty and ranked["Rank"].notna().any():
+            st.subheader("BHA performance ranking (complete intervals)")
             st.dataframe(
-                ranked_complete.sort_values("Rank"),
+                ranked.sort_values("Rank", na_position="last"),
                 use_container_width=True,
                 hide_index=True,
             )
+            rank_fig = plots.plot_bha_ranking(ranked)
+            if rank_fig:
+                st.plotly_chart(rank_fig, use_container_width=True)
+    else:
+        st.caption("Upload BHA PDFs to map assemblies to survey MD intervals.")
 
-with st.expander("RSS push-the-bit vs point-the-bit · Hole size"):
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.markdown("**RSS steering mode**")
+    st.subheader("Motor vs RSS")
+    if not result.system_comparison.empty:
+        st.dataframe(result.system_comparison, use_container_width=True, hide_index=True)
+        fig = plots.plot_drilling_system_bar(result.system_comparison, "Avg Tortuosity")
+        if fig:
+            st.plotly_chart(fig, use_container_width=True)
+    else:
+        _show_table(comparison_table(df, ["Drilling_System"]), "Motor vs RSS (from survey)")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("Push-the-bit vs Point-the-bit")
         if not result.rss_steering_comparison.empty:
             st.dataframe(result.rss_steering_comparison, use_container_width=True, hide_index=True)
         else:
-            st.caption("No RSS runs in BHA table.")
-    with col_b:
-        st.markdown("**Hole size**")
+            st.caption("No RSS steering rows in section table.")
+    with c2:
+        st.subheader("Hole size comparison")
         if not result.hole_size_comparison.empty:
             st.dataframe(result.hole_size_comparison, use_container_width=True, hide_index=True)
         else:
             st.caption("No hole size data from BHA PDFs.")
 
-with st.expander("Survey station data (debug)"):
-    show_cols = [
-        c
-        for c in [
-            "MD",
-            "Inclination",
-            "Azimuth",
-            "DLS",
-            "Section_Code",
-            "Well_Section",
-            "BHA",
-            "Drilling_System",
-            "Hole_Size",
-            "RSS_Type",
-            "Tortuosity_Index",
-            "Wellbore_Smoothness",
-            "Stability",
-            "Survey_File",
-        ]
-        if c in df_full.columns
-    ]
-    st.dataframe(df_full[show_cols], use_container_width=True)
+    st.subheader("RSS summary")
+    st.json(result.rss_summary)
+    rss_pie = plots.plot_rss_distribution(df_full)
+    if rss_pie:
+        st.plotly_chart(rss_pie, use_container_width=True)
+
+with tab_survey:
+    st.write(quality)
+    st.dataframe(df_full, use_container_width=True)
