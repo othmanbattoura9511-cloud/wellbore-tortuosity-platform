@@ -11,12 +11,13 @@ from analytics import AnalyticsResult, comparison_table
 from bha_analytics import incomplete_bha_runs
 from comparison_tables import (
     build_drilling_system_comparison_table,
+    build_engineering_summary_table,
     build_hole_size_comparison,
     build_rss_steering_comparison,
 )
-from display_labels import show_dataframe
+from display_labels import make_streamlit_safe_dataframe, show_dataframe
 from plots import WellPlots
-from sections import CODE_TO_LABEL, SECTION_CODES
+from sections import CODE_TO_LABEL, SECTION_CODES, compute_well_section_intervals
 from ui_theme import render_kpi_row, render_section_panel, render_wellpath_hero, soft_warning
 
 EMPTY_SURVEY_MESSAGE = "Upload one or more survey files, or load the sample well."
@@ -55,43 +56,110 @@ def _dominant_section(section_mix: dict[str, float]) -> str:
 
 
 def _filter_section_comparison(table: pd.DataFrame, section_codes: list[str]) -> pd.DataFrame:
-    if table.empty or not section_codes:
+    if table.empty:
+        return table.copy()
+    if not section_codes:
         return table.iloc[0:0].copy()
     allowed = set(section_codes)
     prefixes = table["Section"].astype(str).str.split("—").str[0].str.strip()
     return table[prefixes.isin(allowed)].copy()
 
 
+def render_engineering_summary_table(summary: pd.DataFrame, section_codes: list[str]) -> None:
+    """Main engineering summary at the bottom of Overview (section-filter aware)."""
+    st.markdown("---")
+    st.markdown("## Engineering summary")
+    st.caption(
+        "Section × BHA comparison for the full well (all surveys and BHA PDFs merged by MD interval). "
+        "Rows update with the sidebar section filter."
+    )
+
+    filtered = _filter_section_comparison(summary, section_codes)
+    if filtered.empty:
+        st.caption("No engineering summary rows match the current section filter.")
+        return
+
+    tool_l, tool_r = st.columns([2, 1])
+    with tool_l:
+        search = st.text_input(
+            "Filter rows",
+            placeholder="Search BHA, system, hole size, survey…",
+            key="overview_engineering_summary_search",
+        )
+    with tool_r:
+        st.download_button(
+            label="Export CSV",
+            data=filtered.to_csv(index=False).encode("utf-8"),
+            file_name="engineering_summary.csv",
+            mime="text/csv",
+            key="overview_engineering_summary_csv",
+            use_container_width=True,
+        )
+
+    view = filtered
+    if search and search.strip():
+        term = search.strip().lower()
+        mask = view.astype(str).apply(lambda row: term in " ".join(row.values).lower(), axis=1)
+        view = view.loc[mask]
+
+    st.caption(f"Showing {len(view)} of {len(filtered)} row(s). Click column headers to sort.")
+
+    try:
+        from streamlit import column_config
+
+        st.dataframe(
+            make_streamlit_safe_dataframe(view),
+            use_container_width=True,
+            hide_index=True,
+            key="overview_engineering_summary_table",
+            column_config={
+                "MD In": column_config.NumberColumn("MD In (m)", format="%.1f"),
+                "MD Out": column_config.NumberColumn("MD Out (m)", format="%.1f"),
+                "Avg DLS (°/30m)": column_config.NumberColumn(format="%.2f"),
+                "Tortuosity Index": column_config.NumberColumn(format="%.3f"),
+                "Stability": column_config.NumberColumn(format="%.3f"),
+                "Smoothness": column_config.NumberColumn(format="%.3f"),
+            },
+        )
+    except Exception:
+        st.warning("This table could not be rendered in the browser. Use Export CSV to download the data.")
+        show_dataframe(view, use_display_names=False)
+
+
 def build_section_engineering_table(df: pd.DataFrame, section_codes: list[str]) -> pd.DataFrame:
-    """Per selected V / C / L engineering summary."""
+    """Per selected V / C / L using contiguous well-wide MD intervals (no overlap)."""
     if df.empty or "Section_Code" not in df.columns:
         return pd.DataFrame()
 
+    intervals = compute_well_section_intervals(df)
     tort_col = "Tortuosity_Index" if "Tortuosity_Index" in df.columns else "Tortuosity_Index_Local"
     rows: list[dict[str, Any]] = []
-    for label, code in SECTION_CODES.items():
+    for _, iv in intervals.iterrows():
+        code = str(iv["Section_Code"])
         if code not in section_codes:
             continue
-        display_label = CODE_TO_LABEL.get(code, label)
-        block = df[df["Section_Code"] == code]
+        md_in, md_out = float(iv["MD_In"]), float(iv["MD_Out"])
+        block = df[(df["MD"] >= md_in) & (df["MD"] <= md_out)]
         if block.empty:
             continue
+        display_label = CODE_TO_LABEL.get(code, code)
         hole = "—"
         if "Hole_Size" in block.columns:
             modes = block["Hole_Size"].replace("Unknown", pd.NA).dropna()
             hole = str(modes.mode().iloc[0]) if len(modes) else "—"
-        perf = _mean(block.get("Stability", pd.Series(dtype=float)))
         rows.append(
             {
                 "Section": f"{code} — {display_label}",
-                "MD interval (m)": f"{block['MD'].min():.0f} – {block['MD'].max():.0f}",
+                "MD interval (m)": f"{md_in:.0f} – {md_out:.0f}",
+                "MD In": md_in,
+                "MD Out": md_out,
                 "Stations": len(block),
                 "Avg inclination (°)": _mean(block["Inclination"]),
                 "Avg DLS (°/30m)": _mean(block["DLS"]),
                 "Tortuosity index": _mean(block.get(tort_col, pd.Series(dtype=float))),
                 "Stability": _mean(block.get("Stability", pd.Series(dtype=float))),
                 "Hole size": hole,
-                "Section performance": perf,
+                "Section performance": _mean(block.get("Stability", pd.Series(dtype=float))),
             }
         )
     return pd.DataFrame(rows)
@@ -155,6 +223,8 @@ def render_overview_tab(
     quality: dict,
     plots: WellPlots,
     section_codes: list[str],
+    df_full: pd.DataFrame,
+    bha_intervals: pd.DataFrame,
 ) -> None:
     render_wellpath_hero(df, chart_key="overview_wellpath")
     kpis = _kpi_summary_from_survey(df)
@@ -192,6 +262,9 @@ def render_overview_tab(
     with c2:
         _plot_chart(plots.plot_dls(df), "overview_dls_md")
         _plot_chart(plots.plot_section_distribution(df), "overview_section_distribution")
+
+    summary = build_engineering_summary_table(df_full, bha_intervals if not bha_intervals.empty else None)
+    render_engineering_summary_table(summary, section_codes)
 
 
 def render_section_analysis_tab(df: pd.DataFrame, plots: WellPlots, section_codes: list[str]) -> None:

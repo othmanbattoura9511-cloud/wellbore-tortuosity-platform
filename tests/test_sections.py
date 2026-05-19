@@ -70,3 +70,63 @@ def test_section_confidence_column_present():
     out = _classify(md, inc)
     assert "Section_Confidence" in out.columns
     assert out["Section_Confidence"].between(0, 1).all()
+
+
+def _section_rank(series: pd.Series) -> list[int]:
+    order = {"Vertical": 0, "Curve": 1, "Lateral": 2}
+    return [order[str(s)] for s in series]
+
+
+def _contiguous_blocks(series: pd.Series, label: str) -> int:
+    blocks = 0
+    active = False
+    for value in series:
+        if value == label:
+            if not active:
+                blocks += 1
+                active = True
+        else:
+            active = False
+    return blocks
+
+
+def test_monotonic_vcl_progression():
+    md = np.arange(0, 4000, 30, dtype=float)
+    inc = np.piecewise(
+        md,
+        [md < 800, (md >= 800) & (md < 2200), md >= 2200],
+        [lambda x: x * 0.01, lambda x: 5 + (x - 800) * 0.04, lambda x: 88.0],
+    ).astype(float)
+    out = _classify(md, inc)
+    ranks = _section_rank(out["Well_Section"])
+    assert all(ranks[i] <= ranks[i + 1] for i in range(len(ranks) - 1))
+    assert _contiguous_blocks(out["Well_Section"], "Vertical") <= 1
+    assert _contiguous_blocks(out["Well_Section"], "Curve") <= 1
+    assert _contiguous_blocks(out["Well_Section"], "Lateral") <= 1
+    assert not _forbidden_sections(out["Well_Section"])
+
+
+def test_no_lateral_to_vertical_regression():
+    md = np.arange(0, 3000, 30, dtype=float)
+    inc = np.concatenate([np.linspace(0, 85, 40), np.full(len(md) - 40, 88.0)])
+    out = _classify(md, inc)
+    ranks = _section_rank(out["Well_Section"])
+    assert all(ranks[i] <= ranks[i + 1] for i in range(len(ranks) - 1))
+
+
+def test_well_section_intervals_contiguous_non_overlapping():
+    from sections import compute_well_section_intervals
+
+    md = np.arange(0, 4000, 30, dtype=float)
+    inc = np.piecewise(
+        md,
+        [md < 800, (md >= 800) & (md < 2200), md >= 2200],
+        [lambda x: x * 0.01, lambda x: 5 + (x - 800) * 0.04, lambda x: 88.0],
+    ).astype(float)
+    out = _classify(md, inc)
+    intervals = compute_well_section_intervals(out)
+    assert not intervals.empty
+    for i in range(len(intervals) - 1):
+        assert float(intervals.iloc[i]["MD_Out"]) <= float(intervals.iloc[i + 1]["MD_In"]) + 1e-6
+    codes = intervals["Section_Code"].tolist()
+    assert codes == [c for c in ["V", "C", "L"] if c in codes]

@@ -5,7 +5,7 @@ Well-section classification: Vertical (V), Curve (C), Lateral (L).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
@@ -21,10 +21,16 @@ SECTION_ORDER = list(SECTION_LABELS)
 class SectionClassificationResult:
     survey: pd.DataFrame
     summary: Dict[str, float | int | str]
+    section_intervals: pd.DataFrame
 
 
 class WellSectionClassifier:
-    """Classify stations into V / C / L using smoothed inclination and build rate."""
+    """
+    Classify stations into exactly one continuous V → C → L progression per well.
+
+    Engineering rule: Vertical (build starts) → Curve/Build → Lateral. No overlaps,
+    gaps, backward transitions, or alternate section names.
+    """
 
     def __init__(
         self,
@@ -32,10 +38,11 @@ class WellSectionClassifier:
         inc_col: str = "Inclination",
         azi_col: str = "Azimuth",
         dls_col: str = "DLS",
-        smooth_window: int = 7,
+        smooth_window: int = 9,
         min_interval_stations: int = 5,
         hysteresis_margin: float = 0.12,
         lateral_inc_deg: float = 75.0,
+        vertical_inc_deg: float = 30.0,
     ):
         self.md_col = md_col
         self.inc_col = inc_col
@@ -45,6 +52,7 @@ class WellSectionClassifier:
         self.min_interval_stations = max(2, min_interval_stations)
         self.hysteresis_margin = hysteresis_margin
         self.lateral_inc_deg = lateral_inc_deg
+        self.vertical_inc_deg = vertical_inc_deg
 
     def classify(self, df: pd.DataFrame) -> pd.DataFrame:
         return self.classify_with_confidence(df).survey
@@ -52,17 +60,28 @@ class WellSectionClassifier:
     def classify_with_confidence(self, df: pd.DataFrame) -> SectionClassificationResult:
         work = self._prepare_kinematics(df)
         scores = self._section_scores(work)
-        raw_labels, raw_confidence = self._score_to_labels(scores)
-        labels = self._apply_hysteresis(raw_labels, scores)
-        labels = self._merge_short_intervals(labels, scores)
-        confidence = self._interval_confidence(labels, scores, raw_confidence)
+        b1, b2 = self._detect_boundary_indices(work, scores)
+        labels = self._assign_monotonic_vcl(scores, work, b1_seed=b1, b2_seed=b2)
+        confidence = self._interval_confidence(labels, scores, pd.Series(0.5, index=labels.index))
 
         out = work.copy()
         out["Well_Section"] = labels.values
         out["Section_Code"] = out["Well_Section"].map(SECTION_CODES)
         out["Section_Confidence"] = confidence.values
 
-        return SectionClassificationResult(survey=out, summary=self._build_summary(out))
+        intervals = compute_well_section_intervals(out, self.md_col)
+        out = apply_section_interval_columns(out, intervals)
+
+        summary = self._build_summary(out)
+        summary["section_boundaries"] = {
+            "curve_onset_index": int(b1),
+            "lateral_onset_index": int(b2),
+        }
+        return SectionClassificationResult(
+            survey=out,
+            summary=summary,
+            section_intervals=intervals,
+        )
 
     def _prepare_kinematics(self, df: pd.DataFrame) -> pd.DataFrame:
         out = df.copy().sort_values(self.md_col).reset_index(drop=True)
@@ -143,53 +162,103 @@ class WellSectionClassifier:
 
         return scores
 
-    def _score_to_labels(self, scores: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
-        ranked = scores.values.argsort(axis=1)
-        top = scores.columns[ranked[:, -1]]
-        top_score = scores.max(axis=1)
-        second_score = scores.apply(lambda row: row.nlargest(2).iloc[-1], axis=1)
-        margin = (top_score - second_score).clip(lower=0)
-        labels = pd.Series(top, index=scores.index, dtype=object)
-        confidence = ((margin + top_score) / (scores.sum(axis=1) + 1e-6)).clip(0, 1)
-        return labels, confidence
+    def _detect_boundary_indices(self, work: pd.DataFrame, scores: pd.DataFrame) -> tuple[int, int]:
+        """Detect curve onset (V→C) and lateral stabilization (C→L) from smoothed survey."""
+        n = len(work)
+        if n <= 1:
+            return n, n
 
-    def _apply_hysteresis(self, labels: pd.Series, scores: pd.DataFrame) -> pd.Series:
-        if labels.empty:
-            return labels
-        out = labels.copy()
-        current = out.iloc[0]
-        for i in range(1, len(out)):
-            candidate = out.iloc[i]
-            if candidate == current:
-                continue
-            if scores.iloc[i][candidate] >= scores.iloc[i][current] + self.hysteresis_margin:
-                current = candidate
-            out.iloc[i] = current
-        return out
+        min_s = self.min_interval_stations
+        inc = work["Inclination_Smooth"].astype(float).values
+        build = np.abs(work["Build_Rate_Smooth"].astype(float).values)
+        build_thr = float(np.percentile(build, 55))
 
-    def _merge_short_intervals(self, labels: pd.Series, scores: pd.DataFrame) -> pd.Series:
-        if len(labels) < 2:
-            return labels
-        arr = labels.to_numpy(copy=True)
-        n = len(arr)
-        i = 0
-        while i < n:
-            j = i + 1
-            while j < n and arr[j] == arr[i]:
-                j += 1
-            if j - i < self.min_interval_stations:
-                left = arr[i - 1] if i > 0 else None
-                right = arr[j] if j < n else None
-                means = scores.iloc[i:j].mean()
-                candidates = [c for c in (left, right) if c is not None]
-                if len(candidates) == 1:
-                    arr[i:j] = candidates[0]
-                elif len(candidates) == 2:
-                    arr[i:j] = left if means.get(left, 0) >= means.get(right, 0) else right
-                else:
-                    arr[i:j] = str(means.idxmax())
-            i = j
-        return pd.Series(arr, index=labels.index, dtype=object)
+        b1 = n
+        for i in range(1, n - min_s):
+            if inc[i] >= self.vertical_inc_deg and np.mean(build[i : i + min_s]) >= build_thr:
+                b1 = i
+                break
+
+        b2 = n
+        start_l = max(b1 + 1, min_s)
+        for i in range(start_l, n - min_s + 1):
+            if inc[i] >= self.lateral_inc_deg and np.mean(inc[i : i + min_s]) >= self.lateral_inc_deg * 0.95:
+                b2 = i
+                break
+
+        if b2 <= b1 and b1 < n:
+            b2 = min(n, b1 + min_s)
+        return b1, b2
+
+    def _labels_from_boundaries(self, n: int, b1: int, b2: int) -> np.ndarray:
+        labels = np.array(["Vertical"] * n, dtype=object)
+        if b1 < n:
+            labels[b1:b2] = "Curve"
+        if b2 < n:
+            labels[b2:] = "Lateral"
+        return labels
+
+    def _assign_monotonic_vcl(
+        self,
+        scores: pd.DataFrame,
+        work: pd.DataFrame,
+        b1_seed: int | None = None,
+        b2_seed: int | None = None,
+    ) -> pd.Series:
+        """
+        Partition into contiguous V → C → L. Optimizes cut points; seeds from physics detection.
+        """
+        n = len(scores)
+        if n == 0:
+            return pd.Series(dtype=object)
+        if n == 1:
+            return pd.Series(["Vertical"], index=scores.index, dtype=object)
+
+        min_s = self.min_interval_stations
+        inc = work["Inclination_Smooth"].astype(float)
+        build = work["Build_Rate_Smooth"].astype(float)
+
+        best_total = -np.inf
+        best_b1, best_b2 = n, n
+
+        b1_range = range(1, n + 1)
+        if b1_seed is not None and 0 < b1_seed < n:
+            b1_range = range(max(1, b1_seed - 30), min(n + 1, b1_seed + 31))
+
+        for b1 in b1_range:
+            b2_start = max(b1, b2_seed - 30) if b2_seed is not None else b1
+            b2_end = min(n + 1, (b2_seed + 31) if b2_seed is not None else n + 1)
+            for b2 in range(max(b1, b2_start), b2_end):
+                if b1 < min_s and b1 < n:
+                    continue
+                if b2 < n and (b2 - b1) < min_s and b1 < n:
+                    continue
+                if b2 < n and (n - b2) < min_s:
+                    continue
+
+                total = float(scores["Vertical"].iloc[:b1].sum())
+                if b1 < b2:
+                    total += float(scores["Curve"].iloc[b1:b2].sum())
+                if b2 < n:
+                    total += float(scores["Lateral"].iloc[b2:].sum())
+                total += self._boundary_incentive(b1, b2, n, inc, build)
+                if total > best_total:
+                    best_total = total
+                    best_b1, best_b2 = b1, b2
+
+        return pd.Series(self._labels_from_boundaries(n, best_b1, best_b2), index=scores.index, dtype=object)
+
+    def _boundary_incentive(self, b1: int, b2: int, n: int, inc: pd.Series, build: pd.Series) -> float:
+        """Favor boundaries aligned with inclination / build physics."""
+        bonus = 0.0
+        if 0 < b1 < n:
+            bonus += 0.15 if float(inc.iloc[b1]) > float(inc.iloc[max(0, b1 - 1)]) else 0.0
+            bonus += 0.1 if float(build.iloc[b1]) > float(build.quantile(0.4)) else 0.0
+        if 0 < b2 < n:
+            bonus += 0.2 if float(inc.iloc[b2]) >= self.lateral_inc_deg * 0.9 else 0.0
+        if b1 == n and float(inc.max()) < self.vertical_inc_deg + 5:
+            bonus += 0.5
+        return bonus
 
     def _interval_confidence(
         self, labels: pd.Series, scores: pd.DataFrame, raw_confidence: pd.Series
@@ -211,6 +280,100 @@ class WellSectionClassifier:
             "section_code_counts": code_counts,
             "dominant_section": df["Well_Section"].mode().iloc[0] if len(df) else "Unknown",
         }
+
+
+def compute_well_section_intervals(df: pd.DataFrame, md_col: str = "MD") -> pd.DataFrame:
+    """
+    Contiguous well-wide MD intervals: V → C → L with shared boundaries (no overlap).
+
+    V ends where C starts; C ends where L starts.
+    """
+    if df is None or df.empty or md_col not in df.columns:
+        return pd.DataFrame()
+
+    work = df.sort_values(md_col).reset_index(drop=True)
+    md = pd.to_numeric(work[md_col], errors="coerce")
+    n = len(work)
+
+    codes = work["Section_Code"].astype(str).tolist() if "Section_Code" in work.columns else []
+    if not codes:
+        return pd.DataFrame()
+
+    b1 = next((i for i, c in enumerate(codes) if c == "C"), n)
+    b2 = next((i for i, c in enumerate(codes) if c == "L"), n)
+    if b1 == n and b2 < n:
+        b1 = b2
+
+    def _md_at(idx: int) -> float:
+        return float(md.iloc[min(max(idx, 0), n - 1)])
+
+    rows: list[dict[str, float | int | str]] = []
+
+    if b1 >= n:
+        rows.append(
+            {
+                "Section_Code": "V",
+                "Well_Section": "Vertical",
+                "Section": "V — Vertical",
+                "MD_In": _md_at(0),
+                "MD_Out": _md_at(n - 1),
+                "Stations": int(n),
+            }
+        )
+    else:
+        if b1 > 0:
+            rows.append(
+                {
+                    "Section_Code": "V",
+                    "Well_Section": "Vertical",
+                    "Section": "V — Vertical",
+                    "MD_In": _md_at(0),
+                    "MD_Out": _md_at(b1),
+                    "Stations": int(b1),
+                }
+            )
+        if b2 > b1:
+            rows.append(
+                {
+                    "Section_Code": "C",
+                    "Well_Section": "Curve",
+                    "Section": "C — Curve",
+                    "MD_In": _md_at(b1),
+                    "MD_Out": _md_at(b2),
+                    "Stations": int(b2 - b1),
+                }
+            )
+        if b2 < n:
+            rows.append(
+                {
+                    "Section_Code": "L",
+                    "Well_Section": "Lateral",
+                    "Section": "L — Lateral",
+                    "MD_In": _md_at(b2),
+                    "MD_Out": _md_at(n - 1),
+                    "Stations": int(n - b2),
+                }
+            )
+
+    return pd.DataFrame(rows)
+
+
+def apply_section_interval_columns(survey: pd.DataFrame, intervals: pd.DataFrame) -> pd.DataFrame:
+    """Attach canonical section MD_In/MD_Out to each survey station from well-wide intervals."""
+    out = survey.copy()
+    if intervals is None or intervals.empty:
+        out["Section_MD_In"] = np.nan
+        out["Section_MD_Out"] = np.nan
+        return out
+
+    out["Section_MD_In"] = np.nan
+    out["Section_MD_Out"] = np.nan
+    for _, row in intervals.iterrows():
+        code = row["Section_Code"]
+        mask = out["Section_Code"] == code
+        out.loc[mask, "Section_MD_In"] = row["MD_In"]
+        out.loc[mask, "Section_MD_Out"] = row["MD_Out"]
+    return out
 
 
 def filter_by_section_codes(df: pd.DataFrame, codes: List[str]) -> pd.DataFrame:

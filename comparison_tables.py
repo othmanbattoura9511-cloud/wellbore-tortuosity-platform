@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 import numpy as np
 import pandas as pd
 
-from sections import SECTION_CODES
+from sections import SECTION_CODES, compute_well_section_intervals
 
 
 def _mean(series: pd.Series) -> float:
@@ -21,28 +21,67 @@ def _md_interval_str(md_in: float, md_out: float) -> str:
     return f"{md_in:.0f} – {md_out:.0f} m"
 
 
-def _section_rows_from_subset(
-    subset: pd.DataFrame,
+def _survey_label(subset: pd.DataFrame) -> str:
+    if subset.empty or "Survey_File" not in subset.columns:
+        return "—"
+    files = subset["Survey_File"].dropna().astype(str).unique()
+    if len(files) == 0:
+        return "—"
+    if len(files) == 1:
+        return str(files[0])
+    return "Multiple surveys"
+
+
+def _clip_interval(md_in: float, md_out: float, clip_in: float | None, clip_out: float | None) -> tuple[float, float] | None:
+    if clip_in is not None:
+        md_in = max(md_in, float(clip_in))
+    if clip_out is not None:
+        md_out = min(md_out, float(clip_out))
+    if md_in > md_out:
+        return None
+    return md_in, md_out
+
+
+def _section_row_from_intervals(
+    survey: pd.DataFrame,
     section_code: str,
+    intervals: pd.DataFrame,
     bha: str,
     system: str,
     hole_size: str,
     rss_type: str,
+    source_file: str = "",
+    bha_md_in: float | None = None,
+    bha_md_out: float | None = None,
 ) -> Dict[str, Any]:
-    sec_name = next((k for k, v in SECTION_CODES.items() if v == section_code), section_code)
-    block = subset[subset["Section_Code"] == section_code]
+    """Build one summary row using contiguous well-wide section MD boundaries."""
+    iv = intervals[intervals["Section_Code"] == section_code]
+    if iv.empty:
+        return {}
+
+    md_in = float(iv.iloc[0]["MD_In"])
+    md_out = float(iv.iloc[0]["MD_Out"])
+    clipped = _clip_interval(md_in, md_out, bha_md_in, bha_md_out)
+    if clipped is None:
+        return {}
+    md_in, md_out = clipped
+
+    block = survey[(survey["MD"] >= md_in) & (survey["MD"] <= md_out)]
     if block.empty:
         return {}
-    md_in = float(block["MD"].min())
-    md_out = float(block["MD"].max())
+
+    sec_name = next((k for k, v in SECTION_CODES.items() if v == section_code), section_code)
     smoothness = block.get("Lateral_Smoothness", block.get("Wellbore_Smoothness", pd.Series(dtype=float)))
     smooth_val = _mean(smoothness.dropna()) if smoothness.notna().any() else _mean(block.get("Wellbore_Smoothness", pd.Series(dtype=float)))
+
     return {
         "Section": f"{section_code} — {sec_name}",
         "BHA": bha,
         "System": system,
         "RSS Type": rss_type if system == "RSS" else "—",
         "Hole Size": hole_size,
+        "MD In": round(md_in, 1),
+        "MD Out": round(md_out, 1),
         "MD Interval": _md_interval_str(md_in, md_out),
         "Avg DLS (°/30m)": _mean(block["DLS"]),
         "Tortuosity Index": _mean(block.get("Tortuosity_Index", block.get("Tortuosity_Index_Local", pd.Series(dtype=float)))),
@@ -52,6 +91,8 @@ def _section_rows_from_subset(
         "Azimuth Control": _mean(block.get("Azimuth_Control", pd.Series(dtype=float))),
         "Build Efficiency": _mean(block.get("Build_Efficiency", pd.Series(dtype=float))),
         "Stations": len(block),
+        "Survey": _survey_label(block),
+        "Source BHA PDF": source_file or "—",
     }
 
 
@@ -60,34 +101,63 @@ def build_section_comparison_table(
     bha_intervals: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
-    TABLE 1 — Section comparison: V/C/L × BHA with engineering KPIs.
+    Section comparison: V/C/L × BHA with contiguous MD intervals (no overlap).
     """
     if survey.empty or "Section_Code" not in survey.columns:
+        return pd.DataFrame()
+
+    intervals = compute_well_section_intervals(survey)
+    if intervals.empty:
         return pd.DataFrame()
 
     rows: List[Dict[str, Any]] = []
 
     if bha_intervals is not None and not bha_intervals.empty:
         for _, bha in bha_intervals.iterrows():
-            md_in, md_out = bha.get("MD_In"), bha.get("MD_Out")
-            if pd.isna(md_in) or pd.isna(md_out):
+            bha_md_in, bha_md_out = bha.get("MD_In"), bha.get("MD_Out")
+            if pd.isna(bha_md_in) or pd.isna(bha_md_out):
                 continue
-            subset = survey[(survey["MD"] >= float(md_in)) & (survey["MD"] <= float(md_out))]
+            subset = survey[(survey["MD"] >= float(bha_md_in)) & (survey["MD"] <= float(bha_md_out))]
             bha_name = str(bha.get("BHA", bha.get("BHA_Run", "Unknown")))
             system = str(bha.get("Drilling_System", "Unknown"))
             hole = str(bha.get("Hole_Size", "Unknown"))
             rss = str(bha.get("RSS_Type", "—"))
+            source = str(bha.get("Source_File", "") or "")
             for code in SECTION_CODES.values():
-                row = _section_rows_from_subset(subset, code, bha_name, system, hole, rss)
+                row = _section_row_from_intervals(
+                    subset,
+                    code,
+                    intervals,
+                    bha_name,
+                    system,
+                    hole,
+                    rss,
+                    source_file=source,
+                    bha_md_in=float(bha_md_in),
+                    bha_md_out=float(bha_md_out),
+                )
                 if row:
                     rows.append(row)
     else:
-        for code in SECTION_CODES.values():
-            sys_mode = survey["Drilling_System"].mode().iloc[0] if "Drilling_System" in survey.columns else "Unknown"
-            hole_mode = survey["Hole_Size"].mode().iloc[0] if "Hole_Size" in survey.columns else "Unknown"
-            row = _section_rows_from_subset(survey, code, "Not mapped", str(sys_mode), str(hole_mode), "—")
-            if row:
-                rows.append(row)
+        if "Survey_File" in survey.columns and survey["Survey_File"].nunique() > 1:
+            for survey_name, surv_subset in survey.groupby("Survey_File", dropna=False):
+                surv_intervals = compute_well_section_intervals(surv_subset)
+                for code in SECTION_CODES.values():
+                    sys_mode = surv_subset["Drilling_System"].mode().iloc[0] if "Drilling_System" in surv_subset.columns else "Unknown"
+                    hole_mode = surv_subset["Hole_Size"].mode().iloc[0] if "Hole_Size" in surv_subset.columns else "Unknown"
+                    row = _section_row_from_intervals(
+                        surv_subset, code, surv_intervals, "Not mapped", str(sys_mode), str(hole_mode), "—"
+                    )
+                    if row:
+                        row["Survey"] = str(survey_name)
+                        rows.append(row)
+        else:
+            for code in SECTION_CODES.values():
+                sys_mode = survey["Drilling_System"].mode().iloc[0] if "Drilling_System" in survey.columns else "Unknown"
+                hole_mode = survey["Hole_Size"].mode().iloc[0] if "Hole_Size" in survey.columns else "Unknown"
+                row = _section_row_from_intervals(survey, code, intervals, "Not mapped", str(sys_mode), str(hole_mode), "—")
+                if row:
+                    rows.append(row)
 
     if not rows:
         return pd.DataFrame()
@@ -97,6 +167,8 @@ def build_section_comparison_table(
         "System",
         "RSS Type",
         "Hole Size",
+        "MD In",
+        "MD Out",
         "MD Interval",
         "Avg DLS (°/30m)",
         "Tortuosity Index",
@@ -106,6 +178,8 @@ def build_section_comparison_table(
         "Azimuth Control",
         "Build Efficiency",
         "Stations",
+        "Survey",
+        "Source BHA PDF",
     ]
     return pd.DataFrame(rows)[cols]
 
@@ -185,3 +259,31 @@ def build_hole_size_comparison(section_table: pd.DataFrame) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows).sort_values("Avg Tortuosity") if rows else pd.DataFrame()
+
+
+ENGINEERING_SUMMARY_COLUMNS = [
+    "Section",
+    "BHA",
+    "System",
+    "RSS Type",
+    "Hole Size",
+    "MD In",
+    "MD Out",
+    "Avg DLS (°/30m)",
+    "Tortuosity Index",
+    "Stability",
+    "Smoothness",
+]
+
+
+def build_engineering_summary_table(
+    survey: pd.DataFrame,
+    bha_intervals: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Main platform engineering summary: section × BHA rows with contiguous MD intervals."""
+    full = build_section_comparison_table(survey, bha_intervals)
+    if full.empty:
+        return full
+    extra = [c for c in ("Survey", "Source BHA PDF") if c in full.columns]
+    cols = extra + [c for c in ENGINEERING_SUMMARY_COLUMNS if c in full.columns]
+    return full[cols].copy()

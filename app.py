@@ -216,7 +216,7 @@ def _tab_guard() -> bool:
 
 with tab_overview:
     if _tab_guard() and result is not None:
-        render_overview_tab(df, result, quality, plots, section_codes)
+        render_overview_tab(df, result, quality, plots, section_codes, df_full, bha_intervals)
 
 with tab_sections:
     if _tab_guard():
