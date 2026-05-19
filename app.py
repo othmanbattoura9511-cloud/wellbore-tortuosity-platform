@@ -1,13 +1,25 @@
-import streamlit as st
+import re
+import tempfile
+from pathlib import Path
+
 import pandas as pd
 import pdfplumber
-import re
+import streamlit as st
 from loaders import SurveyDataLoader
 from preprocess import SurveyPreprocessor
 from sections import WellSectionClassifier
 from survey_quality import SurveyQualityAnalyzer
 from tortuosity import TortuosityAnalyzer
 from plots import WellPlots
+
+
+def save_uploaded_file(uploaded_file):
+    """Persist Streamlit UploadedFile to a temp path for pathlib-based loaders."""
+    suffix = Path(uploaded_file.name).suffix
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(uploaded_file.getbuffer())
+        return tmp.name
+
 
 st.set_page_config(page_title="Wellbore Tortuosity Platform", layout="wide")
 st.title("Wellbore Tortuosity Analytics Platform")
@@ -47,7 +59,7 @@ if bha_files:
         st.write(bha_file.name)
     text = ""
 
-    with pdfplumber.open(bha_file) as pdf:
+    with pdfplumber.open(save_uploaded_file(bha_file)) as pdf:
         for page in pdf.pages:
             extracted = page.extract_text()
             if extracted:
@@ -111,7 +123,7 @@ if bha_files:
         st.success(f"BHA PDF uploaded: {bha_file.name}")
         text = ""
 
-        with pdfplumber.open(bha_file) as pdf:
+        with pdfplumber.open(save_uploaded_file(bha_file)) as pdf:
             for page in pdf.pages:
 
                 extracted = page.extract_text()
@@ -161,40 +173,31 @@ if uploaded is not None:
 
 uploaded = st.session_state.get("uploaded_file", None)
 if uploaded:
-    import tempfile
+    survey_path = save_uploaded_file(uploaded)
+    df = SurveyDataLoader().load(survey_path)
+    pre = SurveyPreprocessor()
+    df = pre.clean(df)
+    df = pre.interpolate_missing(df)
+    df = WellSectionClassifier().classify(df)
+    if "DLS" not in df.columns:
+        df = TortuosityAnalyzer().calculate_dls(df)
+        df["DLS"] = df["DLS_Calc"]
+    df = TortuosityAnalyzer().add_indicators(df)
+    df["BHA"] = "Unknown"
+    df["Drilling_System"] = "Unknown"
+    df["Hole_Size"] = "Unknown"
+    df["Bit_Type"] = "Unknown"
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
-        tmp.write(uploaded.getbuffer())
-        temp_path = tmp.name
-
-        df = SurveyDataLoader().load(temp_path)
-        pre = SurveyPreprocessor()
-        df = pre.clean(df)
-        df = pre.interpolate_missing(df)
-        df = WellSectionClassifier().classify(df)
-        if "DLS" not in df.columns:
-            df = TortuosityAnalyzer().calculate_dls(df)
-            df["DLS"] = df["DLS_Calc"]
-        df = TortuosityAnalyzer().add_indicators(df)
-        df["BHA"] = "Unknown"
-        df["Drilling_System"] = "Unknown"
-        df["Hole_Size"] = "Unknown"
-        df["Bit_Type"] = "Unknown"
-
-        for _, row in bha_runs.iterrows():
-            mask = (df["MD"] >= row["MD_In"]) & (df["MD"] <= row["MD_Out"])
-            df.loc[mask, "BHA"] = row["BHA"]
-            df.loc[mask, "Drilling_System"] = row["Drilling_System"]
-            df.loc[mask, "Hole_Size"] = row["Hole_Size"]
-            df.loc[mask, "Bit_Type"] = row["Bit_Type"]
-        #df["Drilling_System"] = bha_info.get("Drilling_System", "Unknown")
-        #df["Hole_Size"] = bha_info.get("Hole_Size", "Unknown")
-        #df["Bit_Type"] = bha_info.get("Bit_Type", "Unknown")
-        #df["RSS"] = bha_info.get("RSS", "No")
-        quality = SurveyQualityAnalyzer().evaluate(df)
-        st.write(quality)
-        st.dataframe(df, use_container_width=True)
-        st.subheader("Analysis by Drilling System")
+    for _, row in bha_runs.iterrows():
+        mask = (df["MD"] >= row["MD_In"]) & (df["MD"] <= row["MD_Out"])
+        df.loc[mask, "BHA"] = row["BHA"]
+        df.loc[mask, "Drilling_System"] = row["Drilling_System"]
+        df.loc[mask, "Hole_Size"] = row["Hole_Size"]
+        df.loc[mask, "Bit_Type"] = row["Bit_Type"]
+    quality = SurveyQualityAnalyzer().evaluate(df)
+    st.write(quality)
+    st.dataframe(df, use_container_width=True)
+    st.subheader("Analysis by Drilling System")
     st.dataframe(
         df.groupby("Drilling_System")["DLS"].describe(),
         use_container_width=True
